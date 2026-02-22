@@ -54,7 +54,7 @@
     "mermaid": "^11.12.2",
     "tsup": "^8.4.0",
     "typedoc": "^0.28.17",
-    "typedoc-plugin-markdown": "^4.10.0",
+    "typedoc-plugin-markdown": "^4.6.4",
     "typedoc-vitepress-theme": "^1.1.2",
     "typescript": "^5.7.0",
     "vitepress": "^1.6.4",
@@ -65,6 +65,9 @@
     "onlyBuiltDependencies": [
       "@biomejs/biome",
       "esbuild"
+    ],
+    "ignoredBuiltDependencies": [
+      "protobufjs"
     ]
   }
 }
