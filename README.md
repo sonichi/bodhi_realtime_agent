@@ -6,7 +6,11 @@
 TypeScript framework for building real-time voice agent applications using the Google Gemini Live API.
 
 <p align="center">
-  <img src="docs/images/hero.png" alt="Bodhi voice agent demo — real-time web search, image generation, and voice pace control" width="700">
+  <a href="https://www.youtube.com/watch?v=5UlC0v5JdHM">
+    <img src="https://img.youtube.com/vi/5UlC0v5JdHM/maxresdefault.jpg" alt="Watch the demo" width="700">
+  </a>
+  <br>
+  <em>Click to watch the demo</em>
 </p>
 
 Build voice assistants that can search the web, generate images, transfer between specialist agents, and adjust their speech in real time — all through natural conversation over a single WebSocket connection.
