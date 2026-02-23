@@ -108,7 +108,7 @@ The distiller is configured automatically by VoiceSession, but you can control t
 // The distiller extracts every 5 turns by default.
 // It uses the Vercel AI SDK model you pass to VoiceSession.
 const session = new VoiceSession({
-  model: google('gemini-2.0-flash'), // Used for memory extraction
+  model: createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY! })('gemini-2.0-flash'), // Used for memory extraction
   memoryStore: new MarkdownMemoryStore('./memory'),
   // ...other config
 });

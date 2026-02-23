@@ -37,7 +37,7 @@ const assistant: MainAgent = {
 A `VoiceSession` wires together the agent, Gemini connection, and client WebSocket server:
 
 ```typescript
-import { google } from '@ai-sdk/google';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { VoiceSession } from 'bodhi-realtime-agent';
 
 const session = new VoiceSession({
@@ -47,7 +47,7 @@ const session = new VoiceSession({
   agents: [assistant],
   initialAgent: 'assistant',
   port: 9900,
-  model: google('gemini-2.0-flash'),
+  model: createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY! })('gemini-2.0-flash'),
 });
 
 await session.start();
@@ -63,7 +63,7 @@ Connect any WebSocket client that sends PCM audio (16-bit, 16kHz, mono) to `ws:/
 Create a file called `my-agent.ts`:
 
 ```typescript
-import { google } from '@ai-sdk/google';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { VoiceSession } from 'bodhi-realtime-agent';
 import type { MainAgent } from 'bodhi-realtime-agent';
 
@@ -80,7 +80,7 @@ const session = new VoiceSession({
   agents: [assistant],
   initialAgent: 'assistant',
   port: 9900,
-  model: google('gemini-2.0-flash'),
+  model: createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY! })('gemini-2.0-flash'),
 });
 
 await session.start();

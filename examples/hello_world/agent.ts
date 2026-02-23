@@ -14,12 +14,13 @@
  *   GEMINI_API_KEY=your_key pnpm tsx examples/hello_world/agent.ts
  */
 
-import { google } from '@ai-sdk/google';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { GoogleGenAI } from '@google/genai';
+import { tool } from 'ai';
 import { z } from 'zod';
 import { VoiceSession } from '../../src/index.js';
 import { speechSpeed } from '../../src/behaviors/presets.js';
-import type { MainAgent, ToolContext, ToolDefinition } from '../../src/index.js';
+import type { MainAgent, SubagentConfig, ToolDefinition } from '../../src/index.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -41,7 +42,10 @@ const ts = () => new Date().toISOString().slice(11, 23);
 // Tools
 // ---------------------------------------------------------------------------
 
-/** Generates an image with Gemini and sends it to the web client as base64. */
+/**
+ * Background image generation — Gemini keeps talking while a subagent
+ * generates the image and pushes it to the client when ready.
+ */
 const generateImage: ToolDefinition = {
 	name: 'generate_image',
 	description: `Generate an image and display it to the user.
@@ -50,41 +54,57 @@ Do NOT describe the image verbally — you MUST call this tool to actually creat
 	parameters: z.object({
 		prompt: z.string().describe('Detailed description of the image to generate'),
 	}),
-	execution: 'inline',
-	timeout: 60_000,
-	execute: async (args, ctx: ToolContext) => {
-		const { prompt } = args as { prompt: string };
-		console.log(`${ts()} [Tool] generate_image: ${prompt}`);
+	execution: 'background',
+	pendingMessage: "I'm generating your image now. It'll appear on screen shortly.",
+	execute: async () => ({}),
+};
 
-		const ai = new GoogleGenAI({ apiKey: API_KEY });
-		try {
-			const response = await ai.models.generateContent({
-				model: 'gemini-2.5-flash-image',
-				contents: prompt,
-				config: { responseModalities: ['TEXT', 'IMAGE'] },
-			});
+// Mutable ref so the subagent tool closure can publish events on the session
+let sessionRef: VoiceSession | null = null;
 
-			const parts = response.candidates?.[0]?.content?.parts ?? [];
-			for (const part of parts) {
-				if (part.inlineData?.data) {
-					ctx.sendJsonToClient?.({
-						type: 'image',
-						data: {
-							base64: part.inlineData.data,
-							mimeType: part.inlineData.mimeType ?? 'image/png',
-							description: prompt,
-						},
-					});
-					return { status: 'success', description: prompt };
+/** Subagent that generates an image via Gemini and pushes it to the client. */
+const imageSubagent: SubagentConfig = {
+	name: 'image_generator',
+	instructions:
+		'You generate images. Call the create_image tool with the prompt from the task description. Return a short summary of what was generated.',
+	tools: {
+		create_image: tool({
+			description: 'Generate an image using Gemini and display it to the user.',
+			parameters: z.object({
+				prompt: z.string().describe('Image generation prompt'),
+			}),
+			execute: async ({ prompt }) => {
+				console.log(`${ts()} [Subagent] create_image: ${prompt}`);
+				const ai = new GoogleGenAI({ apiKey: API_KEY });
+				const response = await ai.models.generateContent({
+					model: 'gemini-2.5-flash-image',
+					contents: prompt,
+					config: { responseModalities: ['TEXT', 'IMAGE'] },
+				});
+
+				const parts = response.candidates?.[0]?.content?.parts ?? [];
+				for (const part of parts) {
+					if (part.inlineData?.data) {
+						sessionRef?.eventBus.publish('gui.update', {
+							sessionId: sessionRef.sessionManager.sessionId,
+							data: {
+								type: 'image',
+								base64: part.inlineData.data,
+								mimeType: part.inlineData.mimeType ?? 'image/png',
+								description: prompt,
+							},
+						});
+						console.log(`${ts()} [Subagent] Image ready: ${prompt}`);
+						return { status: 'success', description: `Generated image: ${prompt}` };
+					}
 				}
-			}
-			return { status: 'no_image', description: response.text ?? '' };
-		} catch (error) {
-			const msg = error instanceof Error ? error.message : String(error);
-			console.error(`${ts()} [Tool] generate_image error: ${msg}`);
-			return { error: msg };
-		}
+
+				console.log(`${ts()} [Subagent] No image returned for: ${prompt}`);
+				return { status: 'no_image', description: `No image was returned for: ${prompt}` };
+			},
+		}),
 	},
+	maxSteps: 3,
 };
 
 /** Transfer from main → math_expert. */
@@ -153,10 +173,11 @@ async function main() {
 		initialAgent: 'main',
 		port: PORT,
 		host: HOST,
-		model: google('gemini-2.0-flash'),
+		model: createGoogleGenerativeAI({ apiKey: API_KEY })('gemini-2.0-flash'),
 		behaviors: [speechSpeed()],
 		geminiModel: 'gemini-2.5-flash-native-audio-preview-12-2025',
 		speechConfig: { voiceName: 'Puck' },
+		subagentConfigs: { generate_image: imageSubagent },
 		hooks: {
 			onToolCall: (e) =>
 				console.log(`${ts()} [Hook] ${e.toolName} (${e.execution})`),
@@ -166,6 +187,8 @@ async function main() {
 				console.error(`${ts()} [Error] ${e.component}: ${e.error.message}`),
 		},
 	});
+
+	sessionRef = session;
 
 	process.on('SIGINT', async () => {
 		await session.close('user_hangup');

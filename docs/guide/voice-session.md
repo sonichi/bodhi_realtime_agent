@@ -7,7 +7,7 @@ It manages the Gemini connection, client WebSocket server, agent routing, tool e
 ## Basic Usage
 
 ```typescript
-import { google } from '@ai-sdk/google';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { VoiceSession } from 'bodhi-realtime-agent';
 import type { MainAgent } from 'bodhi-realtime-agent';
 
@@ -24,7 +24,7 @@ const session = new VoiceSession({
   agents: [agent],
   initialAgent: 'assistant',
   port: 9900,
-  model: google('gemini-2.0-flash'),
+  model: createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY! })('gemini-2.0-flash'),
 });
 
 await session.start();
@@ -43,7 +43,7 @@ const session = new VoiceSession({
   agents: [mainAgent, expertAgent],        // All agents in this session
   initialAgent: 'main',                    // Agent to start with
   port: 9900,                              // WebSocket port for client connections
-  model: google('gemini-2.0-flash'),       // Vercel AI SDK model (for subagents)
+  model: createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY! })('gemini-2.0-flash'), // Vercel AI SDK model (for subagents)
 
   // --- Optional: Gemini model ---
   geminiModel: 'gemini-2.5-flash-native-audio-preview',  // Native audio model

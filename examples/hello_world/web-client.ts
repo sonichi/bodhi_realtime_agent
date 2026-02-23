@@ -518,7 +518,23 @@ function connectWs() {
           currentUserEl = null;
           currentAssistantEl = null;
         } else if (msg.type === 'gui.update') {
-          addSystem('[gui] ' + JSON.stringify(msg.payload?.data));
+          const guiData = msg.payload?.data;
+          if (guiData?.type === 'image' && guiData.base64) {
+            const imgEl = document.createElement('div');
+            imgEl.className = 't-entry t-system';
+            const img = document.createElement('img');
+            img.src = 'data:' + (guiData.mimeType || 'image/png') + ';base64,' + guiData.base64;
+            img.alt = guiData.description || 'Generated image';
+            img.style.maxWidth = '100%';
+            img.style.borderRadius = '8px';
+            img.style.marginTop = '8px';
+            imgEl.appendChild(img);
+            $('transcript').appendChild(imgEl);
+            $('transcript').scrollTop = $('transcript').scrollHeight;
+            dbg('Image received via gui.update: ' + (guiData.description || '').slice(0, 50), 'event');
+          } else {
+            addSystem('[gui] ' + JSON.stringify(guiData));
+          }
         } else if (msg.type === 'gui.notification') {
           addSystem('[notification] ' + (msg.payload?.message || ''));
         } else if (msg.type === 'image') {

@@ -297,7 +297,7 @@ const formality: BehaviorCategory = {
 A voice assistant with speech speed and verbosity controls:
 
 ```typescript
-import { google } from '@ai-sdk/google';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import {
   VoiceSession,
   speechSpeed,
@@ -318,7 +318,7 @@ const session = new VoiceSession({
   agents: [agent],
   initialAgent: 'assistant',
   port: 9900,
-  model: google('gemini-2.0-flash'),
+  model: createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY! })('gemini-2.0-flash'),
   behaviors: [speechSpeed(), verbosity()],
 });
 

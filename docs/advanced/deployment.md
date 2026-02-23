@@ -91,7 +91,7 @@ function createSession(userId: string): VoiceSession {
     agents: [mainAgent],
     initialAgent: 'main',
     port: 0, // Dynamically assigned
-    model: google('gemini-2.0-flash'),
+    model: createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY! })('gemini-2.0-flash'),
   });
 
   sessions.set(sessionId, session);

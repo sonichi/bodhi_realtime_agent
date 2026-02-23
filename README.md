@@ -53,7 +53,7 @@ pnpm add bodhi-realtime-agent
 ## Quick Start
 
 ```typescript
-import { google } from '@ai-sdk/google';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
 import { VoiceSession } from 'bodhi-realtime-agent';
 import type { MainAgent, ToolDefinition } from 'bodhi-realtime-agent';
@@ -94,7 +94,7 @@ const session = new VoiceSession({
   agents: [mainAgent],
   initialAgent: 'main',
   port: 9900,
-  model: google('gemini-2.0-flash'),
+  model: createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_API_KEY! })('gemini-2.0-flash'),
 });
 
 await session.start();
