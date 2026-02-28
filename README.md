@@ -94,7 +94,7 @@ const session = new VoiceSession({
   agents: [mainAgent],
   initialAgent: 'main',
   port: 9900,
-  model: createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_API_KEY! })('gemini-2.0-flash'),
+  model: createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_API_KEY! })('gemini-2.5-flash'),
 });
 
 await session.start();

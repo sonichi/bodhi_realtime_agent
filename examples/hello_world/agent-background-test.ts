@@ -173,7 +173,7 @@ async function main() {
 		initialAgent: 'main',
 		port: PORT,
 		host: HOST,
-		model: createGoogleGenerativeAI({ apiKey: API_KEY })('gemini-2.0-flash'),
+		model: createGoogleGenerativeAI({ apiKey: API_KEY })('gemini-2.5-flash'),
 		geminiModel: 'gemini-2.5-flash-native-audio-preview-12-2025',
 		speechConfig: { voiceName: 'Puck' },
 		subagentConfigs: {

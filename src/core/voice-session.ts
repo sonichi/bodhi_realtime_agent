@@ -44,7 +44,7 @@ export interface VoiceSessionConfig {
 	port: number;
 	/** Host for the client WebSocket server (default: '0.0.0.0' for all interfaces). */
 	host?: string;
-	/** Gemini model name (e.g. "gemini-2.0-flash-live-001"). */
+	/** Gemini model name (e.g. "gemini-2.5-flash-live-001"). */
 	geminiModel?: string;
 	/** Vercel AI SDK model for subagent text generation. */
 	model: LanguageModelV1;
@@ -84,7 +84,7 @@ export interface VoiceSessionConfig {
  *   agents: [mainAgent, expertAgent],
  *   initialAgent: 'main',
  *   port: 9900,
- *   model: google('gemini-2.0-flash'),
+ *   model: google('gemini-2.5-flash'),
  * });
  * await session.start();
  * ```

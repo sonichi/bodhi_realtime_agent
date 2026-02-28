@@ -73,6 +73,7 @@
     "@types/ws": "^8.5.0",
     "mermaid": "^11.12.2",
     "tsup": "^8.4.0",
+    "tsx": "^4.21.0",
     "typedoc": "^0.28.17",
     "typedoc-plugin-markdown": "^4.6.4",
     "typedoc-vitepress-theme": "^1.1.2",
