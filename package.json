@@ -1,18 +1,25 @@
 {
   "name": "bodhi-realtime-agent",
   "version": "0.1.3",
-  "description": "TypeScript framework for real-time voice agent applications using Google Gemini Live API",
+  "description": "Voice agent framework with parallel background subagents — your agent keeps talking while long-running tasks run in the background. Built on Gemini Live API.",
   "keywords": [
     "ai",
     "agent",
     "ai-agent",
     "voice",
+    "voice-agent",
+    "voice-ai",
     "realtime",
     "gemini",
+    "gemini-live",
     "google",
     "framework",
-    "voice-agent",
-    "agentic-framework"
+    "agentic-framework",
+    "background-tasks",
+    "subagent",
+    "multi-agent",
+    "speech-to-speech",
+    "conversational-ai"
   ],
   "homepage": "https://github.com/randombet/bodhi_realtime_agent#readme",
   "bugs": {

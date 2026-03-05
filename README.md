@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/bodhi-realtime-agent.svg)](https://www.npmjs.com/package/bodhi-realtime-agent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-TypeScript framework for building real-time voice agent applications using the Google Gemini Live API.
+**Your voice agent keeps talking while background tasks run in parallel.** No other framework does this out of the box.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=5UlC0v5JdHM">
@@ -13,28 +13,35 @@ TypeScript framework for building real-time voice agent applications using the G
   <em>Click to watch the demo</em>
 </p>
 
-Build voice assistants that can search the web, generate images, transfer between specialist agents, and adjust their speech in real time — all through natural conversation over a single WebSocket connection.
+Most voice agent frameworks block conversation while tools execute. User says "generate me a video" and the agent goes silent for two minutes. Bodhi splits the work: **main agents** handle the live conversation (Gemini Live API), while **background subagents** (Vercel AI SDK) run long tasks in parallel. When a task finishes, the agent naturally announces it.
 
 ```
- User speaks             Gemini responds
-      │                        ▲
-      ▼                        │
-  Client App ◄──WebSocket──► VoiceSession ◄──WebSocket──► Gemini Live API
-                                │
-                    ┌───────────┼───────────┐
-                AgentRouter   ToolExecutor   Memory
+User: "Make me a video of a sunset AND search for weather in Tokyo"
+
+Main Agent (Gemini Live — realtime voice):
+  "I'm generating your video and looking up the weather..."
+  │
+  ├─ Subagent 1: Video generation (2 min, Veo API)
+  ├─ Subagent 2: Web search (3 sec, Gemini)
+  │
+  "What else can I help with?"      ← keeps talking
+  │
+  [3s]  "The weather in Tokyo is..."  ← search result arrives
+  [2m]  "Your video is ready!"        ← video arrives
 ```
+
+**Zero infrastructure.** No LiveKit server, no media SFU, no platform subscription. Just your Node.js server talking directly to Gemini Live API over WebSocket.
 
 ## Features
 
-- **Real-time voice**: Bidirectional audio streaming with Gemini Live API and server-side turn detection
-- **Multi-agent**: Define multiple agents with distinct personas and tool sets; transfer between them mid-conversation
-- **Function tools**: Inline (blocking) and background (non-blocking) tool execution with Zod validation
-- **Behaviors**: Declarative presets for speech speed, verbosity, and language — auto-generates tools, manages state, syncs with client
-- **Background subagents**: Long-running tool calls hand off to Vercel AI SDK subagents while Gemini keeps talking
+- **Background subagents**: Mark any tool as `execution: 'background'` — it hands off to a Vercel AI SDK subagent with its own tool-use loop (`maxSteps`), running in parallel while the voice agent continues the conversation
+- **Real-time voice**: Bidirectional audio streaming with Gemini Live API, server-side VAD and turn detection
+- **Multi-agent transfers**: Define specialist agents with distinct personas and tools; transfer mid-conversation with context replay and audio buffering
+- **Inline + background tools**: `inline` tools block the turn (fast lookups); `background` tools run async (image/video generation, data analysis)
+- **Behaviors**: Declarative presets for speech speed, verbosity, language — auto-generates tools, manages state, syncs with client
 - **Google Search**: Built-in grounded web search via Gemini with source citations
-- **Image generation**: Generate images with Gemini and push them to the client as base64
-- **Memory**: Automatic extraction and persistence of durable user facts across sessions
+- **Image & video generation**: Generate media with Gemini/Veo and push to the client in real time
+- **Memory**: LLM-powered fact extraction and persistence across sessions with pluggable storage
 - **Session resumption**: Transparent reconnection via Gemini resumption handles and audio buffering
 - **Observability**: Type-safe EventBus and lifecycle hooks for logging, metrics, and debugging
 
