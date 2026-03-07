@@ -32,9 +32,27 @@ Main Agent (Gemini Live — realtime voice):
 
 **Zero infrastructure.** No LiveKit server, no media SFU, no platform subscription. Just your Node.js server talking directly to Gemini Live API over WebSocket.
 
+### OpenClaw Integration — Voice-Driven AI Agent
+
+The [OpenClaw demo](app/openclaw-demo.ts) shows a full-featured voice assistant backed by an **interactive background subagent**. Say "write a Python prime checker" or "summarize today's tech news by email" — the request is delegated to the OpenClaw agent which can code, browse the web, send emails, and more. If OpenClaw needs clarification, it asks the user via voice mid-task, then continues. Meanwhile, Gemini handles quick lookups (Google Search), image/video generation, and keeps the conversation flowing.
+
+```
+User: "Write me a Python script that scrapes Hacker News"
+
+Main Agent (voice):  "I'm sending that to my agent now..."  ← keeps talking
+  │
+  └─ OpenClaw subagent (background, interactive):
+       Step 1: openclaw_chat("Write a Python HN scraper")
+       Step 2: ask_user("Should I include comments or just titles?")  ← voice question
+       Step 3: openclaw_chat(user's answer)
+       Step 4: returns summary
+  │
+Main Agent: "Done! The script is saved as hn_scraper.py..."  ← announces result
+```
+
 ## Features
 
-- **Background subagents**: Mark any tool as `execution: 'background'` — it hands off to a Vercel AI SDK subagent with its own tool-use loop (`maxSteps`), running in parallel while the voice agent continues the conversation
+- **Background subagents**: Mark any tool as `execution: 'background'` — it hands off to a Vercel AI SDK subagent with its own tool-use loop (`maxSteps`), running in parallel while the voice agent continues the conversation. Subagents can be **interactive** — asking the user follow-up questions via voice mid-task
 - **Real-time voice**: Bidirectional audio streaming with Gemini Live API, server-side VAD and turn detection
 - **Multi-agent transfers**: Define specialist agents with distinct personas and tools; transfer mid-conversation with context replay and audio buffering
 - **Inline + background tools**: `inline` tools block the turn (fast lookups); `background` tools run async (image/video generation, data analysis)
@@ -346,13 +364,18 @@ pnpm lint:fix       # Auto-fix lint issues
 pnpm typecheck      # TypeScript type checking
 ```
 
-### Running the Example
+### Running the Examples
 
 ```bash
+# Hello World — voice pacing, agent transfer, Google Search, image/video generation
 GEMINI_API_KEY=your_key pnpm tsx examples/hello_world/agent.ts
+
+# OpenClaw — voice-driven AI agent (coding, research, email, web browsing)
+# Requires an OpenClaw gateway running at ws://127.0.0.1:18789
+pnpm tsx app/openclaw-demo.ts
 ```
 
-Then connect a WebSocket audio client to `ws://localhost:9900` sending PCM 16-bit 16kHz mono audio. See the [hello_world example](examples/hello_world/) for details.
+Then start the web client (`pnpm tsx app/web-client.ts`) and open http://localhost:8080 in Chrome. See [hello_world](examples/hello_world/) and [openclaw-demo](app/openclaw-demo.ts) for details.
 
 ### Integration Tests
 
