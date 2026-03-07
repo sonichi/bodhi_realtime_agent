@@ -16,8 +16,8 @@
  * Usage:
  *   1. Start OpenClaw gateway (ws://127.0.0.1:18789 by default)
  *   2. Set environment variables (see below)
- *   3. Run: pnpm tsx app/openclaw-demo.ts
- *   4. In another terminal: pnpm tsx app/web-client.ts
+ *   3. Run: pnpm tsx examples/openclaw/openclaw-demo.ts
+ *   4. In another terminal: pnpm tsx examples/openclaw/web-client.ts
  *   5. Open http://localhost:8080 in Chrome, click Connect
  *
  * Environment Variables:
@@ -36,10 +36,10 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { GoogleGenAI } from '@google/genai';
 import { tool } from 'ai';
 import { z } from 'zod';
-import { VoiceSession } from '../src/core/voice-session.js';
-import { GeminiBatchSTTProvider } from '../src/transport/gemini-batch-stt-provider.js';
-import type { MainAgent, SubagentConfig } from '../src/types/agent.js';
-import type { ToolDefinition } from '../src/types/tool.js';
+import { VoiceSession } from '../../src/core/voice-session.js';
+import { GeminiBatchSTTProvider } from '../../src/transport/gemini-batch-stt-provider.js';
+import type { MainAgent, SubagentConfig } from '../../src/types/agent.js';
+import type { ToolDefinition } from '../../src/types/tool.js';
 import { OpenClawClient } from './lib/openclaw-client.js';
 import { loadOrCreateDeviceIdentity } from './lib/openclaw-device-identity.js';
 import { askOpenClawTool, createOpenClawSubagentConfig } from './lib/openclaw-tools.js';
@@ -396,7 +396,7 @@ async function main() {
 	console.log(`  Session ID:      ${SESSION_ID}`);
 	console.log();
 	console.log('Start the web client in another terminal:');
-	console.log('  pnpm tsx app/web-client.ts');
+	console.log('  pnpm tsx examples/openclaw/web-client.ts');
 	console.log();
 	console.log('Then open http://localhost:8080 and try saying:');
 	console.log("  - 'What is the weather in San Francisco?'  (Google Search)");

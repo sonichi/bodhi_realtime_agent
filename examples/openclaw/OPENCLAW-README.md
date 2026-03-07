@@ -82,10 +82,10 @@ export OPENCLAW_TOKEN="your-gateway-auth-token"
 
 ```bash
 # Terminal 1: Start the voice agent server
-pnpm tsx app/openclaw-demo.ts
+pnpm tsx examples/openclaw/openclaw-demo.ts
 
 # Terminal 2: Start the web client
-pnpm tsx app/web-client.ts
+pnpm tsx examples/openclaw/web-client.ts
 
 # Open http://localhost:8080 in Chrome and click Connect
 ```

@@ -61,7 +61,7 @@ The OpenAI example has the same tools (calculator, current time, image generatio
 In a second terminal:
 
 ```bash
-pnpm tsx app/web-client.ts
+pnpm tsx examples/openclaw/web-client.ts
 ```
 
 Open [http://localhost:8080](http://localhost:8080) in Chrome and click **Connect**.

@@ -2,8 +2,8 @@
 
 import { tool } from 'ai';
 import { z } from 'zod';
-import type { SubagentConfig } from '../../src/types/agent.js';
-import type { ToolDefinition } from '../../src/types/tool.js';
+import type { SubagentConfig } from '../../../src/types/agent.js';
+import type { ToolDefinition } from '../../../src/types/tool.js';
 import type { OpenClawClient } from './openclaw-client.js';
 
 /**

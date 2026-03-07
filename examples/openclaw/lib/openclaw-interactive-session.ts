@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-import { FrameworkError } from '../../src/core/errors.js';
-import { CancelledError } from '../../src/agent/subagent-session.js';
-import type { SubagentSession } from '../../src/agent/subagent-session.js';
-import type { SubagentResult } from '../../src/types/conversation.js';
+import { FrameworkError } from '../../../src/core/errors.js';
+import { CancelledError } from '../../../src/agent/subagent-session.js';
+import type { SubagentSession } from '../../../src/agent/subagent-session.js';
+import type { SubagentResult } from '../../../src/types/conversation.js';
 import type { ChatEvent, OpenClawClient } from './openclaw-client.js';
 
 /** Tagged user input for Promise.race() discriminated union. */

@@ -6,8 +6,8 @@
 **Your voice agent keeps talking while background tasks run in parallel.** No other framework does this out of the box.
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=5UlC0v5JdHM">
-    <img src="https://img.youtube.com/vi/5UlC0v5JdHM/maxresdefault.jpg" alt="Watch the demo" width="700" />
+  <a href="https://www.youtube.com/watch?v=zkjBKwQu54s">
+    <img src="https://img.youtube.com/vi/zkjBKwQu54s/maxresdefault.jpg" alt="Watch the demo" width="700" />
   </a>
   <br />
   <em>Click to watch the demo</em>
@@ -34,7 +34,7 @@ Main Agent (Gemini Live — realtime voice):
 
 ### OpenClaw Integration — Voice-Driven AI Agent
 
-The [OpenClaw demo](app/openclaw-demo.ts) shows a full-featured voice assistant backed by an **interactive background subagent**. Say "write a Python prime checker" or "summarize today's tech news by email" — the request is delegated to the OpenClaw agent which can code, browse the web, send emails, and more. If OpenClaw needs clarification, it asks the user via voice mid-task, then continues. Meanwhile, Gemini handles quick lookups (Google Search), image/video generation, and keeps the conversation flowing.
+The [OpenClaw demo](examples/openclaw/openclaw-demo.ts) shows a full-featured voice assistant backed by an **interactive background subagent**. Say "write a Python prime checker" or "summarize today's tech news by email" — the request is delegated to the OpenClaw agent which can code, browse the web, send emails, and more. If OpenClaw needs clarification, it asks the user via voice mid-task, then continues. Meanwhile, Gemini handles quick lookups (Google Search), image/video generation, and keeps the conversation flowing.
 
 ```
 User: "Write me a Python script that scrapes Hacker News"
@@ -349,7 +349,7 @@ src/
     prompts.ts                # Extraction/consolidation prompt templates
   types/             # TypeScript interfaces and type definitions
 test/                # Unit and integration tests (mirrors src/ structure)
-app/                 # Usage examples
+examples/            # Usage examples
 ```
 
 ## Development
@@ -372,10 +372,10 @@ GEMINI_API_KEY=your_key pnpm tsx examples/hello_world/agent.ts
 
 # OpenClaw — voice-driven AI agent (coding, research, email, web browsing)
 # Requires an OpenClaw gateway running at ws://127.0.0.1:18789
-pnpm tsx app/openclaw-demo.ts
+pnpm tsx examples/openclaw/openclaw-demo.ts
 ```
 
-Then start the web client (`pnpm tsx app/web-client.ts`) and open http://localhost:8080 in Chrome. See [hello_world](examples/hello_world/) and [openclaw-demo](app/openclaw-demo.ts) for details.
+Then start the web client (`pnpm tsx examples/openclaw/web-client.ts`) and open http://localhost:8080 in Chrome. See [hello_world](examples/hello_world/) and [openclaw](examples/openclaw/) for details.
 
 ### Integration Tests
 
