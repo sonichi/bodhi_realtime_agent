@@ -346,7 +346,7 @@ export class GeminiLiveTransport implements LLMTransport {
 		if (!this.session) return;
 		this.session.sendToolResponse({
 			functionResponses: [
-				{ id: result.id, name: result.name, response: result.result as Record<string, unknown> },
+				{ id: result.id, name: result.name, response: sanitizeForStruct(result.result) },
 			],
 		});
 	}
@@ -579,6 +579,37 @@ export class GeminiLiveTransport implements LLMTransport {
 }
 
 /** Convert a ToolDefinition to a Gemini function declaration (name + description + JSON Schema). */
+/**
+ * Recursively sanitize a value so it conforms to google.protobuf.Struct.
+ * Struct only supports: null, boolean, number, string, array, and object.
+ * Strips undefined fields and converts non-serializable values to strings.
+ */
+function sanitizeForStruct(value: unknown): Record<string, unknown> {
+	const sanitized = sanitizeValue(value);
+	if (typeof sanitized === 'object' && sanitized !== null && !Array.isArray(sanitized)) {
+		return sanitized as Record<string, unknown>;
+	}
+	return { result: sanitized };
+}
+
+function sanitizeValue(value: unknown): unknown {
+	if (value === undefined || value === null) return null;
+	if (typeof value === 'boolean' || typeof value === 'string') return value;
+	if (typeof value === 'number') {
+		if (!Number.isFinite(value)) return String(value);
+		return value;
+	}
+	if (Array.isArray(value)) return value.map(sanitizeValue);
+	if (typeof value === 'object') {
+		const out: Record<string, unknown> = {};
+		for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+			if (v !== undefined) out[k] = sanitizeValue(v);
+		}
+		return out;
+	}
+	return String(value);
+}
+
 function toolToDeclaration(tool: ToolDefinition): Record<string, unknown> {
 	return {
 		name: tool.name,
