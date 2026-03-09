@@ -253,6 +253,7 @@ export class ClaudeCodeSession {
 		];
 
 		const opts: Record<string, unknown> = {
+			pathToClaudeCodeExecutable: process.env.CLAUDE_PATH ?? 'claude',
 			allowedTools,
 			permissionMode: (this.options.permissionMode ?? 'bypassPermissions') as PermissionMode,
 			allowDangerouslySkipPermissions:

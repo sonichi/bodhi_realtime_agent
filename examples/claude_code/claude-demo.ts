@@ -113,11 +113,6 @@ if (GEMINI_API_KEY.length === 0) {
 	process.exit(1);
 }
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? '';
-if (ANTHROPIC_API_KEY.length === 0) {
-	console.error('Error: ANTHROPIC_API_KEY environment variable is required');
-	process.exit(1);
-}
 
 const PORT = Number(process.env.PORT) || 9900;
 const HOST = process.env.HOST || '0.0.0.0';
