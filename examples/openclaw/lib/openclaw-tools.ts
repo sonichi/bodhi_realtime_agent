@@ -4,7 +4,7 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import type { SubagentConfig } from '../../../src/types/agent.js';
 import type { ToolDefinition } from '../../../src/types/tool.js';
-import type { OpenClawClient } from './openclaw-client.js';
+import { mergeText, type OpenClawClient } from './openclaw-client.js';
 
 /**
  * Framework ToolDefinition for the main voice agent (declared to Gemini/OpenAI).
@@ -15,6 +15,8 @@ export const askOpenClawTool: ToolDefinition = {
 	name: 'ask_openclaw',
 	description:
 		'Delegate a task to the OpenClaw AI agent. ' +
+		'ALWAYS use this for any email request (send/draft/reply/forward/rewrite). ' +
+		'ALWAYS use this for any calendar request (lookup/reschedule/schedule). ' +
 		'The agent is general-purpose and can handle coding, research, web browsing, ' +
 		'writing, sending emails, and much more. Route any user request here.',
 	parameters: z.object({
@@ -101,10 +103,18 @@ function createOpenClawChatTool(client: OpenClawClient, sessionKey: string) {
 					const event = await client.nextChatEvent(runId);
 
 					if (event.state === 'delta') {
-						text = event.text ?? text;
+						text = mergeText(text, event.text);
 					} else if (event.state === 'final') {
-						text = event.text ?? text;
-						console.log(`[OpenClaw] Run ${runId} completed (${event.finalDisposition}): ${text.slice(0, 200)}`);
+						text = mergeText(text, event.text);
+						console.log(
+							`[OpenClaw] Run ${runId} completed (${event.finalDisposition}): ${text.slice(0, 200)}`,
+						);
+						if ((event.finalDisposition ?? 'completed') === 'completed' && text.trim().length === 0) {
+							return {
+								status: 'error',
+								error: 'OpenClaw completed with empty response text',
+							};
+						}
 						return {
 							status: event.finalDisposition ?? 'completed',
 							text,

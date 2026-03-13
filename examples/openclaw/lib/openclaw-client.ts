@@ -73,11 +73,48 @@ type GatewayFrame = GatewayResponse | GatewayEvent;
 // Normalization
 // ---------------------------------------------------------------------------
 
-/** Extract text from a message content field (may be string or object). */
+/** Extract text from a message content field (may be string, object, or array). */
 function extractText(content: unknown): string | undefined {
 	if (typeof content === 'string') return content;
-	if (content && typeof content === 'object') return JSON.stringify(content);
+
+	if (Array.isArray(content)) {
+		const chunks: string[] = [];
+		for (const part of content) {
+			if (typeof part === 'string') {
+				if (part.length > 0) chunks.push(part);
+				continue;
+			}
+			if (part && typeof part === 'object') {
+				const obj = part as Record<string, unknown>;
+				if (typeof obj.text === 'string' && obj.text.length > 0) {
+					chunks.push(obj.text);
+					continue;
+				}
+				if (typeof obj.content === 'string' && obj.content.length > 0) {
+					chunks.push(obj.content);
+				}
+			}
+		}
+		if (chunks.length > 0) return chunks.join('');
+		return JSON.stringify(content);
+	}
+
+	if (content && typeof content === 'object') {
+		const obj = content as Record<string, unknown>;
+		if (typeof obj.text === 'string') return obj.text;
+		if (typeof obj.content === 'string') return obj.content;
+		if (Array.isArray(obj.content)) return extractText(obj.content);
+		return JSON.stringify(content);
+	}
+
 	return undefined;
+}
+
+/** Merge streamed text safely — never overwrite prior text with empty/blank chunks. */
+export function mergeText(previous: string, incoming?: string): string {
+	if (incoming == null) return previous;
+	if (incoming.trim().length === 0) return previous;
+	return incoming;
 }
 
 /** Normalize a raw gateway chat event into a framework ChatEvent. */
@@ -248,9 +285,9 @@ export class OpenClawClient {
 				const event = await this.nextChatEvent(runId);
 
 				if (event.state === 'delta') {
-					text = event.text ?? text;
+					text = mergeText(text, event.text);
 				} else if (event.state === 'final') {
-					text = event.text ?? text;
+					text = mergeText(text, event.text);
 					return { text, usage };
 				} else if (event.state === 'error') {
 					throw new Error(event.error ?? 'OpenClaw chat error');
