@@ -263,7 +263,7 @@ const mainAgent: MainAgent = {
 		'- using built-in tools for narrow direct tasks (time, image, video, quick factual lookup),',
 		'- delegate all other tasks to OpenClaw.',
 		'OpenClaw is a general-purpose agent that can handle a wide range of tasks:',
-		'coding, calendar management (bodhiagent@gmail.com),',
+		'coding, calendar management,',
 		'file management, web browsing, research, writing, sending emails,',
 		'and much more. Do NOT assume it is limited to coding.',
 		'',
@@ -320,7 +320,38 @@ async function main() {
 	console.log(`${ts()} OpenClaw gateway connected.`);
 
 	// Create the interactive subagent config for OpenClaw
-	const openclawSubagent = createOpenClawSubagentConfig(openclawClient, SESSION_ID);
+	const queuedNotices = new Map<string, number>();
+	const openclawSubagent = createOpenClawSubagentConfig(openclawClient, SESSION_ID, {
+		onQueueEvent: (event) => {
+			console.log(
+				`${ts()} [OpenClawQueue] taskId=${event.taskId} stage=${event.stage} waitMs=${event.waitMs} queueLength=${event.queueLength}${event.lockKey ? ` lockKey=${event.lockKey}` : ''}`,
+			);
+			const dedupeKey = `${event.taskId}:${event.stage}`;
+			if (queuedNotices.has(dedupeKey)) return;
+			if (queuedNotices.size >= 512) {
+				const cutoff = Date.now() - 60_000;
+				for (const [key, timestamp] of queuedNotices) {
+					if (timestamp < cutoff) queuedNotices.delete(key);
+				}
+				if (queuedNotices.size >= 512) queuedNotices.clear();
+			}
+			queuedNotices.set(dedupeKey, Date.now());
+			const message =
+				event.stage === 'semaphore'
+					? 'All background agents are currently busy. Your task is queued and will start shortly.'
+					: 'A calendar or email update is waiting for another update to finish.';
+			sessionRef?.notifyBackground(message);
+			sessionRef?.eventBus.publish('gui.notification', {
+				sessionId: SESSION_ID,
+				message,
+			});
+		},
+		onThreadResolved: (event) => {
+			console.log(
+				`${ts()} [OpenClawThread] taskId=${event.taskId} threadId=${event.threadId} domain=${event.domain} reason=${event.reason}`,
+			);
+		},
+	});
 
 	// Start voice session
 	const session = new VoiceSession({
