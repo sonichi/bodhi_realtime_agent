@@ -258,19 +258,27 @@ const mainAgent: MainAgent = {
 	].join(' '),
 	instructions: [
 		'You are Bodhi, a voice assistant powered by a capable AI agent (OpenClaw).',
+		'Your main responsibilities are',
+		'- engaging with users,',
+		'- using built-in tools for narrow direct tasks (time, image, video, quick factual lookup),',
+		'- delegate all other tasks to OpenClaw.',
 		'OpenClaw is a general-purpose agent that can handle a wide range of tasks:',
-		'coding, file management, web browsing, research, writing, sending emails,',
+		'coding, calendar management,',
+		'file management, web browsing, research, writing, sending emails,',
 		'and much more. Do NOT assume it is limited to coding.',
 		'',
 		'TOOL ROUTING:',
-		'- Google Search: Use for quick factual lookups — weather, news, sports scores,',
-		'  "who is X", "what is Y". Gemini handles this natively (no tool call needed).',
+		'- get_current_time: For the current date/time.',
 		'- generate_image: When the user asks for any picture, image, card, or illustration.',
 		'- generate_video: When the user asks for a video, animation, or movie clip.',
-		'- get_current_time: For the current date/time.',
-		'- ask_openclaw: For all other complex tasks fall into this category — generic tasks',
-		'  include coding, writing emails, research reports, file operations, multi-step tasks',
-		'  and anything you cannot handle with your built-in tools.',
+		'- Google Search: Use only for quick factual lookups where the user only wants an answer',
+		'  (weather, news, sports scores, "who is X", "what is Y") and no follow-up action.',
+		'- ask_openclaw: ALWAYS use this for any email intent — send, draft, rewrite, reply,',
+		'  forward, or "email this to ...". Do NOT handle email requests directly yourself.',
+		'- ask_openclaw: Also use for coding, calendar, file operations, research reports,',
+		'  writing tasks, and any multi-step request or task with a deliverable.',
+		'- ask_openclaw: If the request combines lookup + action (for example,',
+		'  "summarize today\'s tech news and email it"), route to OpenClaw.',
 		'  If unsure, route to OpenClaw.',
 		'- end_session: When the user says goodbye.',
 		'',
@@ -282,6 +290,8 @@ const mainAgent: MainAgent = {
 		'IMPORTANT:',
 		'- OpenClaw may ask follow-up questions — these will be relayed to the user via voice.',
 		'- For image/video generation, warn the user it may take a moment.',
+		'- Never claim an email was sent unless ask_openclaw has completed and said it was sent.',
+		'- DO NOT EXPOSE OPENCLAW or ANY INTERNAL PROCESS to USERs.',
 	].join('\n'),
 	tools: [askOpenClawTool, getCurrentTime, generateImage, generateVideo, endSession],
 	googleSearch: true,
@@ -310,7 +320,38 @@ async function main() {
 	console.log(`${ts()} OpenClaw gateway connected.`);
 
 	// Create the interactive subagent config for OpenClaw
-	const openclawSubagent = createOpenClawSubagentConfig(openclawClient, SESSION_ID);
+	const queuedNotices = new Map<string, number>();
+	const openclawSubagent = createOpenClawSubagentConfig(openclawClient, SESSION_ID, {
+		onQueueEvent: (event) => {
+			console.log(
+				`${ts()} [OpenClawQueue] taskId=${event.taskId} stage=${event.stage} waitMs=${event.waitMs} queueLength=${event.queueLength}${event.lockKey ? ` lockKey=${event.lockKey}` : ''}`,
+			);
+			const dedupeKey = `${event.taskId}:${event.stage}`;
+			if (queuedNotices.has(dedupeKey)) return;
+			if (queuedNotices.size >= 512) {
+				const cutoff = Date.now() - 60_000;
+				for (const [key, timestamp] of queuedNotices) {
+					if (timestamp < cutoff) queuedNotices.delete(key);
+				}
+				if (queuedNotices.size >= 512) queuedNotices.clear();
+			}
+			queuedNotices.set(dedupeKey, Date.now());
+			const message =
+				event.stage === 'semaphore'
+					? 'All background agents are currently busy. Your task is queued and will start shortly.'
+					: 'A calendar or email update is waiting for another update to finish.';
+			sessionRef?.notifyBackground(message);
+			sessionRef?.eventBus.publish('gui.notification', {
+				sessionId: SESSION_ID,
+				message,
+			});
+		},
+		onThreadResolved: (event) => {
+			console.log(
+				`${ts()} [OpenClawThread] taskId=${event.taskId} threadId=${event.threadId} domain=${event.domain} reason=${event.reason}`,
+			);
+		},
+	});
 
 	// Start voice session
 	const session = new VoiceSession({

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	type ChatEvent,
 	type GatewayChatEventRaw,
+	mergeText,
 	normalizeEvent,
 } from '../../examples/openclaw/lib/openclaw-client.js';
 
@@ -126,6 +127,33 @@ describe('normalizeEvent', () => {
 		expect(event.finalDisposition).toBeUndefined();
 	});
 
+	it('extracts text from object content with text field', () => {
+		const raw: GatewayChatEventRaw = {
+			...baseRaw,
+			message: {
+				role: 'assistant',
+				content: { type: 'text', text: 'Conflict at 9:30 AM' } as unknown as string,
+			},
+		};
+		const event = normalizeEvent(raw);
+		expect(event.text).toBe('Conflict at 9:30 AM');
+	});
+
+	it('extracts text from array content blocks', () => {
+		const raw: GatewayChatEventRaw = {
+			...baseRaw,
+			message: {
+				role: 'assistant',
+				content: [
+					{ type: 'text', text: 'Conflict at 9:30 AM. ' },
+					{ type: 'text', text: 'Teams sync overlaps.' },
+				] as unknown as string,
+			},
+		};
+		const event = normalizeEvent(raw);
+		expect(event.text).toBe('Conflict at 9:30 AM. Teams sync overlaps.');
+	});
+
 	it('preserves stopReason on final events', () => {
 		const raw: GatewayChatEventRaw = {
 			...baseRaw,
@@ -135,5 +163,20 @@ describe('normalizeEvent', () => {
 
 		const event = normalizeEvent(raw);
 		expect(event.stopReason).toBe('stop');
+	});
+});
+
+describe('mergeText', () => {
+	it('keeps previous text when incoming is undefined', () => {
+		expect(mergeText('Conflict at 9:30 AM', undefined)).toBe('Conflict at 9:30 AM');
+	});
+
+	it('keeps previous text when incoming is empty or whitespace', () => {
+		expect(mergeText('Conflict at 9:30 AM', '')).toBe('Conflict at 9:30 AM');
+		expect(mergeText('Conflict at 9:30 AM', '   ')).toBe('Conflict at 9:30 AM');
+	});
+
+	it('replaces with incoming text when incoming is non-empty', () => {
+		expect(mergeText('Old', 'New result')).toBe('New result');
 	});
 });

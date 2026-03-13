@@ -132,6 +132,17 @@ The voice agent routes requests to the appropriate tool:
 
 When unsure, the agent routes to OpenClaw.
 
+## Parallel Tasking
+
+The demo supports up to 10 concurrent OpenClaw tasks with full isolation. When you ask for multiple things at once (e.g., "check my calendar and draft a newsletter"), each task gets its own OpenClaw session — no cross-talk.
+
+Key behaviors:
+- **Session isolation** — Each task runs on its own OpenClaw session key, preventing context contamination between concurrent tasks.
+- **Follow-up detection** — Saying "confirm that reschedule" automatically routes to the correct in-progress task thread, without needing to specify which task you mean.
+- **Write serialization** — Two calendar writes are serialized to prevent conflicts, while a calendar read and an email send run in parallel.
+- **Queue notifications** — If all 10 slots are busy, you hear "All background agents are currently busy" and see a notification in the UI.
+- **Retry on empty response** — If OpenClaw returns an empty completion (a known issue with overlapping sessions), the task retries once automatically.
+
 ## Files
 
 | File | Description |
@@ -140,6 +151,7 @@ When unsure, the agent routes to OpenClaw.
 | `web-client.ts` | Web client — browser UI for mic capture, audio playback, transcription |
 | `lib/openclaw-client.ts` | WebSocket client for OpenClaw Gateway JSON-RPC protocol |
 | `lib/openclaw-tools.ts` | Tool definitions and subagent config for OpenClaw delegation |
+| `lib/openclaw-task-manager.ts` | Parallel task manager — semaphore, thread registry, write locks, domain inference |
 | `lib/openclaw-device-identity.ts` | Ed25519 device identity — keygen, persistence, challenge signing |
 
 ## Environment Variables

@@ -4,7 +4,7 @@ import { FrameworkError } from '../../../src/core/errors.js';
 import { CancelledError } from '../../../src/agent/subagent-session.js';
 import type { SubagentSession } from '../../../src/agent/subagent-session.js';
 import type { SubagentResult } from '../../../src/types/conversation.js';
-import type { ChatEvent, OpenClawClient } from './openclaw-client.js';
+import { mergeText, type ChatEvent, type OpenClawClient } from './openclaw-client.js';
 
 /** Tagged user input for Promise.race() discriminated union. */
 type TaggedUserInput = { source: 'user_input'; text: string };
@@ -47,11 +47,16 @@ export async function runOpenClawInteractiveSession(
 
 			if (event.source === 'chat') {
 				if (event.state === 'delta') {
-					accumulatedText = event.text ?? accumulatedText;
+					accumulatedText = mergeText(accumulatedText, event.text);
 				} else if (event.state === 'final') {
-					accumulatedText = event.text ?? accumulatedText;
+					accumulatedText = mergeText(accumulatedText, event.text);
 
 					if (event.finalDisposition === 'completed') {
+						if (accumulatedText.trim().length === 0) {
+							throw new FrameworkError('OpenClaw completed with empty response text', {
+								component: 'openclaw-relay',
+							});
+						}
 						return { text: accumulatedText, stepCount: 0 };
 					}
 					if (event.finalDisposition === 'needs_input') {

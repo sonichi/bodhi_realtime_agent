@@ -80,6 +80,67 @@ describe('runOpenClawInteractiveSession', () => {
 		expect(result.text).toBe('Done! Code written.');
 	});
 
+	it('preserves delta text when final event text is empty', async () => {
+		const { client, deliverEvent, waitForEventRequest } = createMockClient();
+		const session = new SubagentSessionImpl('tc-1');
+
+		vi.mocked(client.chatSend).mockResolvedValueOnce({ runId: 'run-1' });
+
+		const resultPromise = runOpenClawInteractiveSession(
+			client,
+			session,
+			'bodhi:s1',
+			'Check calendar',
+		);
+
+		await waitForEventRequest('run-1');
+		deliverEvent('run-1', {
+			source: 'chat',
+			runId: 'run-1',
+			state: 'delta',
+			text: 'Conflict found: Teams sync at 9:30 AM.',
+		});
+
+		await waitForEventRequest('run-1');
+		deliverEvent('run-1', {
+			source: 'chat',
+			runId: 'run-1',
+			state: 'final',
+			text: '',
+			finalDisposition: 'completed',
+			stopReason: 'stop',
+		});
+
+		const result = await resultPromise;
+		expect(result.text).toBe('Conflict found: Teams sync at 9:30 AM.');
+	});
+
+	it('throws when OpenClaw completes with empty text and no prior delta', async () => {
+		const { client, deliverEvent, waitForEventRequest } = createMockClient();
+		const session = new SubagentSessionImpl('tc-1');
+
+		vi.mocked(client.chatSend).mockResolvedValueOnce({ runId: 'run-1' });
+
+		const resultPromise = runOpenClawInteractiveSession(
+			client,
+			session,
+			'bodhi:s1',
+			'Check calendar',
+		);
+
+		await waitForEventRequest('run-1');
+		deliverEvent('run-1', {
+			source: 'chat',
+			runId: 'run-1',
+			state: 'final',
+			text: '',
+			finalDisposition: 'completed',
+			stopReason: 'stop',
+		});
+
+		await expect(resultPromise).rejects.toThrow('empty response text');
+	});
+
 	it('relays needs_input to user and sends user response back to OpenClaw', async () => {
 		const { client, deliverEvent, waitForEventRequest } = createMockClient();
 		const session = new SubagentSessionImpl('tc-1');
