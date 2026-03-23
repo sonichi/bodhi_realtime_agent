@@ -717,7 +717,9 @@ export class VoiceSession {
 				.catch((err) => {
 					this.clientTransport.stopBuffering();
 					this.reportError('reconnect', err);
-					this.sessionManager.transitionTo('CLOSED');
+					if (this.sessionManager.state !== 'CLOSED') {
+						this.sessionManager.transitionTo('CLOSED');
+					}
 				});
 		}
 	}
