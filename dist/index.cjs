@@ -1275,6 +1275,12 @@ var SessionManager = class {
   get resumptionHandle() {
     return this._resumptionHandle;
   }
+  /** Reset to CREATED state — allows a fresh session after CLOSED. */
+  reset() {
+    this._state = "CREATED";
+    this._resumptionHandle = null;
+    this._bufferedMessages = [];
+  }
   transitionTo(newState) {
     const allowed = VALID_TRANSITIONS[this._state];
     if (!allowed.includes(newState)) {
@@ -2452,10 +2458,29 @@ var GeminiLiveTransport = class {
     if (!this.session) return;
     this.session.sendToolResponse({ functionResponses: responses });
   }
-  /** Send text-based conversation turns to Gemini (legacy API, used for context replay). */
-  sendClientContent(turns, turnComplete = true) {
+  /** Send text-based conversation turns to Gemini.
+   *
+   * Uses `sendRealtimeInput({ text })` — required by `gemini-3.x-flash-live-preview`
+   * models, which reject the legacy `sendClientContent` text path with WebSocket
+   * close code 1011 "Internal error encountered". Verified to also work on
+   * `gemini-2.5-flash-native-audio-preview-12-2025`, so the migration is
+   * unconditional (no model-version gate needed).
+   *
+   * Multi-turn input is concatenated into a single text string with newline
+   * separators. Role information is preserved via inline "<role>:" prefixes so
+   * the model can still distinguish user/model turns in the concatenated blob.
+   * The `turnComplete` parameter is ignored by `sendRealtimeInput`; the Gemini
+   * Live API decides turn boundaries via automatic activity detection.
+   */
+  sendClientContent(turns, _turnComplete = true) {
     if (!this.session) return;
-    this.session.sendClientContent({ turns, turnComplete });
+    const text = turns.map((t) => {
+      const body = (t.parts || []).map((p) => p.text).filter(Boolean).join(" ");
+      if (!body) return "";
+      return turns.length > 1 ? `${t.role}: ${body}` : body;
+    }).filter(Boolean).join("\n");
+    if (!text) return;
+    this.session.sendRealtimeInput({ text });
   }
   /** Update the tool declarations (applied on next reconnect). */
   updateTools(tools) {
@@ -2473,21 +2498,33 @@ var GeminiLiveTransport = class {
     return this.session !== null;
   }
   // --- LLMTransport methods ---
-  /** Send provider-neutral content turns to Gemini. Converts ContentTurn to Gemini format. */
-  sendContent(turns, turnComplete = true) {
+  /** Send provider-neutral content turns to Gemini.
+   *
+   * Uses `sendRealtimeInput({ text })` for the reasons documented on
+   * `sendClientContent` above. `assistant` role is mapped to `model:` prefix
+   * in the concatenated text so the model can still recognize its own past
+   * turns in the injected context.
+   */
+  sendContent(turns, _turnComplete = true) {
     if (!this.session) return;
-    const geminiTurns = turns.map((t) => ({
-      role: t.role === "assistant" ? "model" : t.role,
-      parts: [{ text: t.text }]
-    }));
-    this.session.sendClientContent({ turns: geminiTurns, turnComplete });
+    const text = turns.map((t) => {
+      const role = t.role === "assistant" ? "model" : t.role;
+      if (!t.text) return "";
+      return turns.length > 1 ? `${role}: ${t.text}` : t.text;
+    }).filter(Boolean).join("\n");
+    if (!text) return;
+    this.session.sendRealtimeInput({ text });
   }
-  /** Send a file/image to Gemini as inline data. */
+  /** Send a file/image to Gemini as inline data.
+   *
+   * Uses `sendRealtimeInput({ media })` instead of the legacy
+   * `sendClientContent({ inlineData })` path — required by the 3.x live
+   * models per the migration note on `sendClientContent` above.
+   */
   sendFile(base64Data, mimeType) {
     if (!this.session) return;
-    this.session.sendClientContent({
-      turns: [{ role: "user", parts: [{ inlineData: { data: base64Data, mimeType } }] }],
-      turnComplete: false
+    this.session.sendRealtimeInput({
+      media: { data: base64Data, mimeType }
     });
   }
   /** Send a tool result back to Gemini (LLMTransport API). */
@@ -2567,45 +2604,59 @@ var GeminiLiveTransport = class {
       }
     }
   }
-  /** Convert ReplayItem[] to Gemini Content format and send as client content. */
+  /** Replay prior conversation to Gemini on reconnect.
+   *
+   * Uses `sendRealtimeInput` instead of the legacy `sendClientContent` path
+   * — see the note on `sendClientContent` above for why. Text, tool calls,
+   * tool results, and transfers are flattened into a single concatenated
+   * text string (with role and tool markers inline) and sent as one
+   * `sendRealtimeInput({ text })` call. File/inline-data items are sent
+   * separately via `sendRealtimeInput({ media })` in their original order
+   * relative to the text stream.
+   *
+   * Tradeoff vs the old path: tool call/result turns are now represented as
+   * bracketed text descriptions rather than structured functionCall/
+   * functionResponse objects. The model loses some of the tool-typing
+   * signal on reconnect but gains 3.x-live compatibility. Acceptable for
+   * reconnect history replay; new live tool calls still flow through
+   * `sendToolResponse` on the structured path.
+   */
   replayHistory(items) {
     if (!this.session || items.length === 0) return;
-    const turns = [];
+    const textChunks = [];
     for (const item of items) {
       switch (item.type) {
-        case "text":
-          turns.push({
-            role: item.role === "assistant" ? "model" : item.role,
-            parts: [{ text: item.text }]
-          });
+        case "text": {
+          const role = item.role === "assistant" ? "model" : item.role;
+          textChunks.push(`${role}: ${item.text}`);
           break;
+        }
         case "tool_call":
-          turns.push({
-            role: "model",
-            parts: [{ functionCall: { name: item.name, args: item.args } }]
-          });
+          textChunks.push(
+            `[model called tool ${item.name} with args ${JSON.stringify(item.args)}]`
+          );
           break;
         case "tool_result":
-          turns.push({
-            role: "user",
-            parts: [{ functionResponse: { name: item.name, response: item.result } }]
-          });
+          textChunks.push(`[tool ${item.name} returned ${JSON.stringify(item.result)}]`);
           break;
         case "file":
-          turns.push({
-            role: "user",
-            parts: [{ inlineData: { data: item.base64Data, mimeType: item.mimeType } }]
-          });
+          textChunks.push(`[user attached file: ${item.mimeType}]`);
           break;
         case "transfer":
-          turns.push({
-            role: "user",
-            parts: [{ text: `[Agent transfer: ${item.fromAgent} \u2192 ${item.toAgent}]` }]
-          });
+          textChunks.push(`[Agent transfer: ${item.fromAgent} \u2192 ${item.toAgent}]`);
           break;
       }
     }
-    this.session.sendClientContent({ turns, turnComplete: false });
+    if (textChunks.length > 0) {
+      this.session.sendRealtimeInput({ text: textChunks.join("\n") });
+    }
+    for (const item of items) {
+      if (item.type === "file") {
+        this.session.sendRealtimeInput({
+          media: { data: item.base64Data, mimeType: item.mimeType }
+        });
+      }
+    }
   }
   // biome-ignore lint/suspicious/noExplicitAny: LiveServerMessage is a complex union type
   handleMessage(msg) {
@@ -3187,6 +3238,11 @@ ${agent.greeting}` : agent.greeting;
       this.sessionManager.transitionTo("RECONNECTING");
       this.clientTransport.startBuffering();
       this.transport.reconnect({ conversationHistory: this.conversationContext.toReplayContent() }).then(() => {
+        if (this.sessionManager.state === "CLOSED") {
+          this.log("Reconnect succeeded but session already CLOSED \u2014 skipping ACTIVE transition");
+          this.clientTransport.stopBuffering();
+          return;
+        }
         const buffered = this.clientTransport.stopBuffering();
         for (const chunk of buffered) {
           this.transport.sendAudio(chunk.toString("base64"));
@@ -3195,7 +3251,9 @@ ${agent.greeting}` : agent.greeting;
       }).catch((err) => {
         this.clientTransport.stopBuffering();
         this.reportError("reconnect", err);
-        this.sessionManager.transitionTo("CLOSED");
+        if (this.sessionManager.state !== "CLOSED") {
+          this.sessionManager.transitionTo("CLOSED");
+        }
       });
     }
   }
@@ -3267,7 +3325,8 @@ ${recent}`
         }
       }
     } else if (this.sessionManager.state === "CLOSED") {
-      this.log("Gemini inactive \u2014 reconnecting for new client...");
+      this.log("Gemini inactive \u2014 resetting session and reconnecting for new client...");
+      this.sessionManager.reset();
       this.sessionManager.transitionTo("CONNECTING");
       const connectPromise = this.config.transport ? this.transport.connect() : this.transport.connect({
         auth: { type: "api_key", apiKey: this.config.apiKey },

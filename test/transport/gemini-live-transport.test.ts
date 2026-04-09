@@ -209,16 +209,37 @@ describe('GeminiLiveTransport', () => {
 	});
 
 	describe('sendClientContent', () => {
-		it('sends turns with turnComplete default', async () => {
+		it('routes single-turn text to sendRealtimeInput', async () => {
 			const transport = new GeminiLiveTransport({ apiKey: 'test-key' }, {});
 			await transport.connect();
 
 			transport.sendClientContent([{ role: 'user', parts: [{ text: 'hello' }] }]);
 
-			expect(mockSession.sendClientContent).toHaveBeenCalledWith({
-				turns: [{ role: 'user', parts: [{ text: 'hello' }] }],
-				turnComplete: true,
+			expect(mockSession.sendRealtimeInput).toHaveBeenCalledWith({ text: 'hello' });
+			expect(mockSession.sendClientContent).not.toHaveBeenCalled();
+		});
+
+		it('concatenates multi-turn text with role prefixes', async () => {
+			const transport = new GeminiLiveTransport({ apiKey: 'test-key' }, {});
+			await transport.connect();
+
+			transport.sendClientContent([
+				{ role: 'user', parts: [{ text: 'hello' }] },
+				{ role: 'model', parts: [{ text: 'hi there' }] },
+			]);
+
+			expect(mockSession.sendRealtimeInput).toHaveBeenCalledWith({
+				text: 'user: hello\nmodel: hi there',
 			});
+		});
+
+		it('skips empty turns', async () => {
+			const transport = new GeminiLiveTransport({ apiKey: 'test-key' }, {});
+			await transport.connect();
+
+			transport.sendClientContent([{ role: 'user', parts: [] }]);
+
+			expect(mockSession.sendRealtimeInput).not.toHaveBeenCalled();
 		});
 	});
 
@@ -399,7 +420,7 @@ describe('GeminiLiveTransport', () => {
 	});
 
 	describe('sendContent', () => {
-		it('converts ContentTurn to Gemini format', async () => {
+		it('concatenates multi-turn ContentTurn with role prefixes (assistant → model)', async () => {
 			const transport = new GeminiLiveTransport({ apiKey: 'test-key' }, {});
 			await transport.connect();
 
@@ -408,44 +429,33 @@ describe('GeminiLiveTransport', () => {
 				{ role: 'assistant', text: 'hi there' },
 			]);
 
-			expect(mockSession.sendClientContent).toHaveBeenCalledWith({
-				turns: [
-					{ role: 'user', parts: [{ text: 'hello' }] },
-					{ role: 'model', parts: [{ text: 'hi there' }] },
-				],
-				turnComplete: true,
+			expect(mockSession.sendRealtimeInput).toHaveBeenCalledWith({
+				text: 'user: hello\nmodel: hi there',
 			});
+			expect(mockSession.sendClientContent).not.toHaveBeenCalled();
 		});
 
-		it('respects turnComplete parameter', async () => {
+		it('sends single turn without role prefix', async () => {
 			const transport = new GeminiLiveTransport({ apiKey: 'test-key' }, {});
 			await transport.connect();
 
 			transport.sendContent([{ role: 'user', text: 'hello' }], false);
 
-			expect(mockSession.sendClientContent).toHaveBeenCalledWith({
-				turns: [{ role: 'user', parts: [{ text: 'hello' }] }],
-				turnComplete: false,
-			});
+			expect(mockSession.sendRealtimeInput).toHaveBeenCalledWith({ text: 'hello' });
 		});
 	});
 
 	describe('sendFile', () => {
-		it('wraps in inlineData format', async () => {
+		it('routes to sendRealtimeInput({media})', async () => {
 			const transport = new GeminiLiveTransport({ apiKey: 'test-key' }, {});
 			await transport.connect();
 
 			transport.sendFile('base64imgdata', 'image/png');
 
-			expect(mockSession.sendClientContent).toHaveBeenCalledWith({
-				turns: [
-					{
-						role: 'user',
-						parts: [{ inlineData: { data: 'base64imgdata', mimeType: 'image/png' } }],
-					},
-				],
-				turnComplete: false,
+			expect(mockSession.sendRealtimeInput).toHaveBeenCalledWith({
+				media: { data: 'base64imgdata', mimeType: 'image/png' },
 			});
+			expect(mockSession.sendClientContent).not.toHaveBeenCalled();
 		});
 	});
 
@@ -468,9 +478,10 @@ describe('GeminiLiveTransport', () => {
 	});
 
 	describe('transferSession', () => {
-		it('disconnects, reconnects, and replays conversation history', async () => {
+		it('disconnects, reconnects, and replays conversation history via sendRealtimeInput', async () => {
 			const transport = new GeminiLiveTransport({ apiKey: 'test-key' }, {});
 			await transport.connect();
+			mockSession.sendRealtimeInput.mockClear();
 			mockSession.sendClientContent.mockClear();
 
 			await transport.transferSession(
@@ -486,14 +497,11 @@ describe('GeminiLiveTransport', () => {
 			// Should have reconnected (close + connect)
 			expect(mockSession.close).toHaveBeenCalled();
 
-			// Should have replayed the conversation history
-			expect(mockSession.sendClientContent).toHaveBeenCalledWith({
-				turns: [
-					{ role: 'user', parts: [{ text: 'hello' }] },
-					{ role: 'model', parts: [{ text: 'hi' }] },
-				],
-				turnComplete: false,
+			// Replay is now via sendRealtimeInput with role-prefixed text
+			expect(mockSession.sendRealtimeInput).toHaveBeenCalledWith({
+				text: 'user: hello\nmodel: hi',
 			});
+			expect(mockSession.sendClientContent).not.toHaveBeenCalled();
 		});
 	});
 

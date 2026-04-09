@@ -708,6 +708,11 @@ export class VoiceSession {
 			this.transport
 				.reconnect({ conversationHistory: this.conversationContext.toReplayContent() })
 				.then(() => {
+					if (this.sessionManager.state === 'CLOSED') {
+						this.log('Reconnect succeeded but session already CLOSED — skipping ACTIVE transition');
+						this.clientTransport.stopBuffering();
+						return;
+					}
 					const buffered = this.clientTransport.stopBuffering();
 					for (const chunk of buffered) {
 						this.transport.sendAudio(chunk.toString('base64'));
@@ -717,7 +722,9 @@ export class VoiceSession {
 				.catch((err) => {
 					this.clientTransport.stopBuffering();
 					this.reportError('reconnect', err);
-					this.sessionManager.transitionTo('CLOSED');
+					if (this.sessionManager.state !== 'CLOSED') {
+						this.sessionManager.transitionTo('CLOSED');
+					}
 				});
 		}
 	}
@@ -822,7 +829,8 @@ export class VoiceSession {
 			}
 		} else if (this.sessionManager.state === 'CLOSED') {
 			// Gemini connection dropped (idle timeout / GoAway) — reconnect fresh
-			this.log('Gemini inactive — reconnecting for new client...');
+			this.log('Gemini inactive — resetting session and reconnecting for new client...');
+			this.sessionManager.reset();
 			this.sessionManager.transitionTo('CONNECTING');
 			const connectPromise = this.config.transport
 				? this.transport.connect()
