@@ -2212,13 +2212,26 @@ declare class GeminiLiveTransport implements LLMTransport {
         name?: string;
         response?: Record<string, unknown>;
     }>, _scheduling?: 'SILENT' | 'WHEN_IDLE' | 'INTERRUPT'): void;
-    /** Send text-based conversation turns to Gemini (legacy API, used for context replay). */
+    /** Send text-based conversation turns to Gemini.
+     *
+     * Uses `sendRealtimeInput({ text })` — required by `gemini-3.x-flash-live-preview`
+     * models, which reject the legacy `sendClientContent` text path with WebSocket
+     * close code 1011 "Internal error encountered". Verified to also work on
+     * `gemini-2.5-flash-native-audio-preview-12-2025`, so the migration is
+     * unconditional (no model-version gate needed).
+     *
+     * Multi-turn input is concatenated into a single text string with newline
+     * separators. Role information is preserved via inline "<role>:" prefixes so
+     * the model can still distinguish user/model turns in the concatenated blob.
+     * The `turnComplete` parameter is ignored by `sendRealtimeInput`; the Gemini
+     * Live API decides turn boundaries via automatic activity detection.
+     */
     sendClientContent(turns: Array<{
         role: string;
         parts: Array<{
             text: string;
         }>;
-    }>, turnComplete?: boolean): void;
+    }>, _turnComplete?: boolean): void;
     /** Update the tool declarations (applied on next reconnect). */
     updateTools(tools: ToolDefinition[]): void;
     /** Update the system instruction (applied on next reconnect). */
@@ -2226,9 +2239,20 @@ declare class GeminiLiveTransport implements LLMTransport {
     /** Update Google Search grounding flag (applied on next reconnect). */
     updateGoogleSearch(enabled: boolean): void;
     get isConnected(): boolean;
-    /** Send provider-neutral content turns to Gemini. Converts ContentTurn to Gemini format. */
-    sendContent(turns: ContentTurn[], turnComplete?: boolean): void;
-    /** Send a file/image to Gemini as inline data. */
+    /** Send provider-neutral content turns to Gemini.
+     *
+     * Uses `sendRealtimeInput({ text })` for the reasons documented on
+     * `sendClientContent` above. `assistant` role is mapped to `model:` prefix
+     * in the concatenated text so the model can still recognize its own past
+     * turns in the injected context.
+     */
+    sendContent(turns: ContentTurn[], _turnComplete?: boolean): void;
+    /** Send a file/image to Gemini as inline data.
+     *
+     * Uses `sendRealtimeInput({ media })` instead of the legacy
+     * `sendClientContent({ inlineData })` path — required by the 3.x live
+     * models per the migration note on `sendClientContent` above.
+     */
     sendFile(base64Data: string, mimeType: string): void;
     /** Send a tool result back to Gemini (LLMTransport API). */
     sendToolResult(result: TransportToolResult): void;
@@ -2247,7 +2271,23 @@ declare class GeminiLiveTransport implements LLMTransport {
      *  undefined fields preserve existing constructor values.
      */
     private applyTransportConfig;
-    /** Convert ReplayItem[] to Gemini Content format and send as client content. */
+    /** Replay prior conversation to Gemini on reconnect.
+     *
+     * Uses `sendRealtimeInput` instead of the legacy `sendClientContent` path
+     * — see the note on `sendClientContent` above for why. Text, tool calls,
+     * tool results, and transfers are flattened into a single concatenated
+     * text string (with role and tool markers inline) and sent as one
+     * `sendRealtimeInput({ text })` call. File/inline-data items are sent
+     * separately via `sendRealtimeInput({ media })` in their original order
+     * relative to the text stream.
+     *
+     * Tradeoff vs the old path: tool call/result turns are now represented as
+     * bracketed text descriptions rather than structured functionCall/
+     * functionResponse objects. The model loses some of the tool-typing
+     * signal on reconnect but gains 3.x-live compatibility. Acceptable for
+     * reconnect history replay; new live tool calls still flow through
+     * `sendToolResponse` on the structured path.
+     */
     private replayHistory;
     private handleMessage;
 }

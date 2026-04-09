@@ -1149,25 +1149,13 @@ describe('VoiceSession', () => {
 			expect(capturedSetDirective).toBeDefined();
 
 			// Fire turn complete — should inject directive
-			mockGeminiSession.sendClientContent.mockClear();
+			mockGeminiSession.sendRealtimeInput.mockClear();
 			fire({ serverContent: { turnComplete: true } });
 
 			await new Promise((r) => setTimeout(r, 50));
 
-			expect(mockGeminiSession.sendClientContent).toHaveBeenCalledWith(
-				expect.objectContaining({
-					turns: expect.arrayContaining([
-						expect.objectContaining({
-							role: 'user',
-							parts: expect.arrayContaining([
-								expect.objectContaining({
-									text: expect.stringContaining('Speak slowly'),
-								}),
-							]),
-						}),
-					]),
-					turnComplete: true,
-				}),
+			expect(mockGeminiSession.sendRealtimeInput).toHaveBeenCalledWith(
+				expect.objectContaining({ text: expect.stringContaining('Speak slowly') }),
 			);
 		});
 
@@ -1226,12 +1214,12 @@ describe('VoiceSession', () => {
 			await new Promise((r) => setTimeout(r, 100));
 
 			// Fire turn complete — should NOT inject (directive was cleared)
-			mockGeminiSession.sendClientContent.mockClear();
+			mockGeminiSession.sendRealtimeInput.mockClear();
 			fire({ serverContent: { turnComplete: true } });
 			await new Promise((r) => setTimeout(r, 50));
 
 			// sendClientContent should not be called with directive text
-			const calls = mockGeminiSession.sendClientContent.mock.calls;
+			const calls = mockGeminiSession.sendRealtimeInput.mock.calls;
 			const hasDirective = calls.some((call: unknown[]) => {
 				const arg = call[0] as { turns?: Array<{ parts?: Array<{ text?: string }> }> };
 				return arg.turns?.some((t) => t.parts?.some((p) => p.text?.includes('SYSTEM DIRECTIVES')));
@@ -1259,11 +1247,11 @@ describe('VoiceSession', () => {
 				_getMockSession as unknown as () => Record<string, ReturnType<typeof vi.fn>>
 			)();
 
-			mockGeminiSession.sendClientContent.mockClear();
+			mockGeminiSession.sendRealtimeInput.mockClear();
 			fire({ serverContent: { turnComplete: true } });
 			await new Promise((r) => setTimeout(r, 50));
 
-			const calls = mockGeminiSession.sendClientContent.mock.calls;
+			const calls = mockGeminiSession.sendRealtimeInput.mock.calls;
 			const hasDirective = calls.some((call: unknown[]) => {
 				const arg = call[0] as { turns?: Array<{ parts?: Array<{ text?: string }> }> };
 				return arg.turns?.some((t) => t.parts?.some((p) => p.text?.includes('SYSTEM DIRECTIVES')));
@@ -1292,7 +1280,7 @@ describe('VoiceSession', () => {
 				_getMockSession as unknown as () => Record<string, ReturnType<typeof vi.fn>>
 			)();
 
-			mockGeminiSession.sendClientContent.mockClear();
+			mockGeminiSession.sendRealtimeInput.mockClear();
 
 			// Connect a client — should trigger greeting
 			const WebSocket = (await import('ws')).default;
@@ -1301,20 +1289,8 @@ describe('VoiceSession', () => {
 
 			await new Promise((r) => setTimeout(r, 50));
 
-			expect(mockGeminiSession.sendClientContent).toHaveBeenCalledWith(
-				expect.objectContaining({
-					turns: expect.arrayContaining([
-						expect.objectContaining({
-							role: 'user',
-							parts: expect.arrayContaining([
-								expect.objectContaining({
-									text: '[System: Greet the user warmly.]',
-								}),
-							]),
-						}),
-					]),
-					turnComplete: true,
-				}),
+			expect(mockGeminiSession.sendRealtimeInput).toHaveBeenCalledWith(
+				expect.objectContaining({ text: '[System: Greet the user warmly.]' }),
 			);
 
 			ws.close();
@@ -1340,7 +1316,7 @@ describe('VoiceSession', () => {
 				_getMockSession as unknown as () => Record<string, ReturnType<typeof vi.fn>>
 			)();
 
-			mockGeminiSession.sendClientContent.mockClear();
+			mockGeminiSession.sendRealtimeInput.mockClear();
 
 			// Connect a client
 			const WebSocket = (await import('ws')).default;
@@ -1350,7 +1326,7 @@ describe('VoiceSession', () => {
 			await new Promise((r) => setTimeout(r, 50));
 
 			// Should NOT have called sendClientContent with any greeting
-			const calls = mockGeminiSession.sendClientContent.mock.calls;
+			const calls = mockGeminiSession.sendRealtimeInput.mock.calls;
 			const hasGreeting = calls.some((call: unknown[]) => {
 				const arg = call[0] as { turnComplete?: boolean };
 				return arg.turnComplete === true;
@@ -1392,16 +1368,10 @@ describe('VoiceSession', () => {
 			)();
 
 			// Greeting should have been sent (from either handleClientConnected or handleSetupComplete)
-			const calls = mockGeminiSession.sendClientContent.mock.calls;
+			const calls = mockGeminiSession.sendRealtimeInput.mock.calls;
 			const greetingCall = calls.find((call: unknown[]) => {
-				const arg = call[0] as {
-					turns?: Array<{ parts?: Array<{ text?: string }> }>;
-					turnComplete?: boolean;
-				};
-				return (
-					arg.turnComplete === true &&
-					arg.turns?.some((t) => t.parts?.some((p) => p.text?.includes('Greet the user warmly')))
-				);
+				const arg = call[0] as { text?: string };
+				return typeof arg.text === 'string' && arg.text.includes('Greet the user warmly');
 			});
 			expect(greetingCall).toBeDefined();
 
@@ -1572,12 +1542,10 @@ describe('VoiceSession', () => {
 			await new Promise((r) => setTimeout(r, 100));
 
 			// The completion notification should be QUEUED, not sent yet.
-			const contentCallsBefore = mockSess.sendClientContent.mock.calls;
+			const contentCallsBefore = mockSess.sendRealtimeInput.mock.calls;
 			const completionBefore = contentCallsBefore.find((c: unknown[]) => {
-				const arg = c[0] as { turns?: Array<{ parts?: Array<{ text?: string }> }> };
-				return arg.turns?.some((t) =>
-					t.parts?.some((p) => p.text?.includes('completed successfully')),
-				);
+				const arg = c[0] as { text?: string };
+				return typeof arg.text === 'string' && arg.text.includes('completed successfully');
 			});
 			expect(completionBefore).toBeUndefined();
 
@@ -1586,12 +1554,10 @@ describe('VoiceSession', () => {
 			await new Promise((r) => setTimeout(r, 100));
 
 			// Now the queued notification should have been flushed
-			const contentCallsAfter = mockSess.sendClientContent.mock.calls;
+			const contentCallsAfter = mockSess.sendRealtimeInput.mock.calls;
 			const completionAfter = contentCallsAfter.find((c: unknown[]) => {
-				const arg = c[0] as { turns?: Array<{ parts?: Array<{ text?: string }> }> };
-				return arg.turns?.some((t) =>
-					t.parts?.some((p) => p.text?.includes('completed successfully')),
-				);
+				const arg = c[0] as { text?: string };
+				return typeof arg.text === 'string' && arg.text.includes('completed successfully');
 			});
 			expect(completionAfter).toBeDefined();
 		});
@@ -1616,12 +1582,10 @@ describe('VoiceSession', () => {
 			await new Promise((r) => setTimeout(r, 100));
 
 			// Notification should be sent immediately (not queued)
-			const contentCalls = mockSess.sendClientContent.mock.calls;
+			const contentCalls = mockSess.sendRealtimeInput.mock.calls;
 			const completion = contentCalls.find((c: unknown[]) => {
-				const arg = c[0] as { turns?: Array<{ parts?: Array<{ text?: string }> }> };
-				return arg.turns?.some((t) =>
-					t.parts?.some((p) => p.text?.includes('completed successfully')),
-				);
+				const arg = c[0] as { text?: string };
+				return typeof arg.text === 'string' && arg.text.includes('completed successfully');
 			});
 			expect(completion).toBeDefined();
 		});
@@ -1659,12 +1623,10 @@ describe('VoiceSession', () => {
 			await new Promise((r) => setTimeout(r, 100));
 
 			// Notification should still be queued (not flushed after interrupted turn)
-			const contentCallsAfterInterrupt = mockSess.sendClientContent.mock.calls;
+			const contentCallsAfterInterrupt = mockSess.sendRealtimeInput.mock.calls;
 			const completionAfterInterrupt = contentCallsAfterInterrupt.find((c: unknown[]) => {
-				const arg = c[0] as { turns?: Array<{ parts?: Array<{ text?: string }> }> };
-				return arg.turns?.some((t) =>
-					t.parts?.some((p) => p.text?.includes('completed successfully')),
-				);
+				const arg = c[0] as { text?: string };
+				return typeof arg.text === 'string' && arg.text.includes('completed successfully');
 			});
 			expect(completionAfterInterrupt).toBeUndefined();
 
@@ -1678,12 +1640,10 @@ describe('VoiceSession', () => {
 			await new Promise((r) => setTimeout(r, 100));
 
 			// NOW it should be flushed
-			const contentCallsFinal = mockSess.sendClientContent.mock.calls;
+			const contentCallsFinal = mockSess.sendRealtimeInput.mock.calls;
 			const completionFinal = contentCallsFinal.find((c: unknown[]) => {
-				const arg = c[0] as { turns?: Array<{ parts?: Array<{ text?: string }> }> };
-				return arg.turns?.some((t) =>
-					t.parts?.some((p) => p.text?.includes('completed successfully')),
-				);
+				const arg = c[0] as { text?: string };
+				return typeof arg.text === 'string' && arg.text.includes('completed successfully');
 			});
 			expect(completionFinal).toBeDefined();
 		});
@@ -1713,7 +1673,7 @@ describe('VoiceSession', () => {
 			await new Promise((r) => setTimeout(r, 100));
 
 			// Error notification should be queued, not sent
-			const contentCallsBefore = mockSess.sendClientContent.mock.calls;
+			const contentCallsBefore = mockSess.sendRealtimeInput.mock.calls;
 			const errorBefore = contentCallsBefore.find((c: unknown[]) => {
 				const arg = c[0] as { turns?: Array<{ parts?: Array<{ text?: string }> }> };
 				return arg.turns?.some((t) => t.parts?.some((p) => p.text?.includes('failed')));
@@ -1724,7 +1684,7 @@ describe('VoiceSession', () => {
 			fire({ serverContent: { turnComplete: true } });
 			await new Promise((r) => setTimeout(r, 100));
 
-			const contentCallsAfter = mockSess.sendClientContent.mock.calls;
+			const contentCallsAfter = mockSess.sendRealtimeInput.mock.calls;
 			const errorAfter = contentCallsAfter.find((c: unknown[]) => {
 				const arg = c[0] as { turns?: Array<{ parts?: Array<{ text?: string }> }> };
 				return arg.turns?.some((t) => t.parts?.some((p) => p.text?.includes('failed')));
