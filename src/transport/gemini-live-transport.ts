@@ -278,8 +278,10 @@ export class GeminiLiveTransport implements LLMTransport {
 	/** Send base64-encoded PCM audio to Gemini as realtime input. */
 	sendAudio(base64Data: string): void {
 		if (!this.session) return;
+		// Use `audio` not `media` — the SDK maps `media` to deprecated `media_chunks`
+		// wire format, which Gemini 3.1 rejects with 1007.
 		this.session.sendRealtimeInput({
-			media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' },
+			audio: { data: base64Data, mimeType: 'audio/pcm;rate=16000' },
 		});
 	}
 

@@ -2450,7 +2450,7 @@ var GeminiLiveTransport = class {
   sendAudio(base64Data) {
     if (!this.session) return;
     this.session.sendRealtimeInput({
-      media: { data: base64Data, mimeType: "audio/pcm;rate=16000" }
+      audio: { data: base64Data, mimeType: "audio/pcm;rate=16000" }
     });
   }
   /** Send tool execution results back to Gemini (legacy API). */
