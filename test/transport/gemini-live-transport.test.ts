@@ -446,16 +446,42 @@ describe('GeminiLiveTransport', () => {
 	});
 
 	describe('sendFile', () => {
-		it('routes to sendRealtimeInput({media})', async () => {
+		it('routes image/* to sendRealtimeInput({video})', async () => {
 			const transport = new GeminiLiveTransport({ apiKey: 'test-key' }, {});
 			await transport.connect();
 
 			transport.sendFile('base64imgdata', 'image/png');
 
 			expect(mockSession.sendRealtimeInput).toHaveBeenCalledWith({
-				media: { data: 'base64imgdata', mimeType: 'image/png' },
+				video: { data: 'base64imgdata', mimeType: 'image/png' },
 			});
 			expect(mockSession.sendClientContent).not.toHaveBeenCalled();
+		});
+
+		it('routes audio/* to sendRealtimeInput({audio})', async () => {
+			const transport = new GeminiLiveTransport({ apiKey: 'test-key' }, {});
+			await transport.connect();
+
+			transport.sendFile('base64audiodata', 'audio/mp3');
+
+			expect(mockSession.sendRealtimeInput).toHaveBeenCalledWith({
+				audio: { data: 'base64audiodata', mimeType: 'audio/mp3' },
+			});
+		});
+
+		it('warns and no-ops for unsupported mimeType', async () => {
+			const transport = new GeminiLiveTransport({ apiKey: 'test-key' }, {});
+			await transport.connect();
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+			transport.sendFile('base64pdfdata', 'application/pdf');
+
+			expect(mockSession.sendRealtimeInput).not.toHaveBeenCalled();
+			expect(mockSession.sendClientContent).not.toHaveBeenCalled();
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining('unsupported mimeType "application/pdf"'),
+			);
+			warnSpy.mockRestore();
 		});
 	});
 
