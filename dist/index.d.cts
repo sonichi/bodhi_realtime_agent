@@ -2247,11 +2247,24 @@ declare class GeminiLiveTransport implements LLMTransport {
      * turns in the injected context.
      */
     sendContent(turns: ContentTurn[], _turnComplete?: boolean): void;
-    /** Send a file/image to Gemini as inline data.
+    /** Send a file/image to Gemini as realtime input.
      *
-     * Uses `sendRealtimeInput({ media })` instead of the legacy
-     * `sendClientContent({ inlineData })` path — required by the 3.x live
-     * models per the migration note on `sendClientContent` above.
+     * Branches on mimeType prefix because Gemini Live's realtime_input
+     * has separate slots for audio/video/text — not a generic "media"
+     * slot. The `@google/genai` SDK's `media` field maps to the
+     * deprecated `media_chunks` wire format, which Gemini 3.1 rejects
+     * with close code 1007. Companion to #2 (`sendAudio` media→audio).
+     *
+     *   image/* → `video` (Gemini treats images as single-frame video)
+     *   audio/* → `audio` (symmetric with sendAudio, though callers
+     *             should prefer sendAudio for live PCM streams)
+     *   other → warn + no-op. Gemini Live realtime_input has no slot
+     *           for arbitrary files (PDFs, docs, etc.). The previous
+     *           sendClientContent({ inlineData }) path is not viable
+     *           under #1's sendClientContent text-only narrowing.
+     *           Consumers wanting to attach non-image/non-audio files
+     *           during a voice session should call sendContent with a
+     *           [System: user attached file] prefix text instead.
      */
     sendFile(base64Data: string, mimeType: string): void;
     /** Send a tool result back to Gemini (LLMTransport API). */
