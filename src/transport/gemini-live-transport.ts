@@ -275,11 +275,15 @@ export class GeminiLiveTransport implements LLMTransport {
 		}
 	}
 
-	/** Send base64-encoded PCM audio to Gemini as realtime input. */
+	/** Send base64-encoded PCM audio to Gemini as realtime input.
+	 *  Uses the `audio` key — the `@google/genai` SDK maps `media` to the
+	 *  deprecated `media_chunks` wire format, which Gemini 3.1 rejects with
+	 *  close code 1007 "media_chunks is deprecated". The `audio` key maps
+	 *  correctly on both 2.5 and 3.1. */
 	sendAudio(base64Data: string): void {
 		if (!this.session) return;
 		this.session.sendRealtimeInput({
-			media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' },
+			audio: { data: base64Data, mimeType: 'audio/pcm;rate=16000' },
 		});
 	}
 
