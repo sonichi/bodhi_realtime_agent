@@ -1460,6 +1460,39 @@ describe('VoiceSession', () => {
 				}),
 			);
 		});
+
+		it('ignores late-arriving GoAway after session is CLOSED', async () => {
+			const onError = vi.fn();
+			session = new VoiceSession({
+				sessionId: 'sess_late_goaway',
+				userId: 'user_1',
+				apiKey: 'test-key',
+				agents: [createEchoAgent()],
+				initialAgent: 'echo',
+				port: 9906,
+				model: mockModel,
+				hooks: { onError },
+			});
+
+			await session.start();
+			await new Promise((r) => setTimeout(r, 50));
+
+			// Force the session into CLOSED state so the next GoAway is "late".
+			session.sessionManager.transitionTo('CLOSED');
+			expect(session.sessionManager.state).toBe('CLOSED');
+
+			// Fire a GoAway after CLOSED. Without the guard this would throw an
+			// "Invalid transition: CLOSED -> RECONNECTING" SessionError.
+			const { _getMessageHandler } = await import('@google/genai');
+			const fire = (_getMessageHandler as unknown as () => (msg: unknown) => void)();
+			expect(() => fire({ goAway: { timeLeft: '30s' } })).not.toThrow();
+
+			await new Promise((r) => setTimeout(r, 50));
+
+			// State unchanged, no reconnect-error path fired.
+			expect(session.sessionManager.state).toBe('CLOSED');
+			expect(onError).not.toHaveBeenCalled();
+		});
 	});
 
 	describe('background tool notification queuing', () => {
