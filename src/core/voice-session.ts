@@ -699,6 +699,15 @@ export class VoiceSession {
 			timeLeft,
 		});
 
+		// Ignore late-arriving GoAway from a transport torn down during a
+		// previous reconnect. Only ACTIVE → RECONNECTING is a valid
+		// transition; any other state (CLOSED in particular) throws an
+		// unhandled SessionError from transitionTo below.
+		if (this.sessionManager.state !== 'ACTIVE') {
+			this.log(`GoAway ignored — sessionManager state is ${this.sessionManager.state}, not ACTIVE`);
+			return;
+		}
+
 		// Initiate reconnection
 		const handle = this.sessionManager.resumptionHandle;
 		if (handle) {
