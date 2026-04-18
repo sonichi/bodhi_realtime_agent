@@ -493,6 +493,16 @@ var AgentRouter = class {
     this.extraTools = extraTools;
     this.subagentCallbacks = subagentCallbacks;
   }
+  sessionManager;
+  eventBus;
+  hooks;
+  conversationContext;
+  transport;
+  clientTransport;
+  model;
+  getInstructionSuffix;
+  extraTools;
+  subagentCallbacks;
   agents = /* @__PURE__ */ new Map();
   _activeAgent = null;
   activeSubagents = /* @__PURE__ */ new Map();
@@ -683,6 +693,9 @@ var BackgroundNotificationQueue = class {
     this.log = log;
     this.messageTruncation = messageTruncation;
   }
+  sendContent;
+  log;
+  messageTruncation;
   queue = [];
   audioReceived = false;
   interrupted = false;
@@ -1070,6 +1083,12 @@ var ConversationHistoryWriter = class {
     this.store = store;
     this.subscribe();
   }
+  sessionId;
+  userId;
+  initialAgentName;
+  eventBus;
+  conversationContext;
+  store;
   unsubscribers = [];
   analytics = {
     turnCount: 0,
@@ -1177,6 +1196,8 @@ var SessionManager = class {
     this.userId = config.userId;
     this.initialAgent = config.initialAgent;
   }
+  eventBus;
+  hooks;
   _state = "CREATED";
   _resumptionHandle = null;
   _bufferedMessages = [];
@@ -1284,6 +1305,8 @@ var MemoryCacheManager = class {
     this.store = store;
     this.userId = userId;
   }
+  store;
+  userId;
   cache = [];
   /** Reload cached facts from the store. Best-effort: keeps stale cache on failure. */
   async refresh() {
@@ -1459,6 +1482,7 @@ var TranscriptManager = class {
   constructor(sink) {
     this.sink = sink;
   }
+  sink;
   inputBuffer = "";
   outputBuffer = "";
   /** Pre-tool-call output text, saved when a tool call splits a turn. */
@@ -1753,6 +1777,10 @@ var MemoryDistiller = class {
     this.turnFrequency = config.turnFrequency ?? 5;
     this.extractionTimeoutMs = config.extractionTimeoutMs ?? DEFAULT_EXTRACTION_TIMEOUT_MS;
   }
+  conversationContext;
+  memoryStore;
+  hooks;
+  model;
   turnCount = 0;
   extractionInFlight = false;
   turnFrequency;
@@ -1846,6 +1874,12 @@ var ToolExecutor = class {
     this.sendJsonToClient = sendJsonToClient;
     this.setDirective = setDirective;
   }
+  hooks;
+  eventBus;
+  sessionId;
+  agentName;
+  sendJsonToClient;
+  setDirective;
   tools = /* @__PURE__ */ new Map();
   pending = /* @__PURE__ */ new Map();
   register(tools) {
@@ -2045,6 +2079,10 @@ var ClientTransport = class {
     this.host = host;
     this.listenTimeoutMs = listenTimeoutMs;
   }
+  port;
+  callbacks;
+  host;
+  listenTimeoutMs;
   wss = null;
   client = null;
   audioBuffer = new AudioBuffer();
@@ -3179,6 +3217,10 @@ ${agent.greeting}` : agent.greeting;
       sessionId: this.config.sessionId,
       timeLeft
     });
+    if (this.sessionManager.state !== "ACTIVE") {
+      this.log(`GoAway ignored \u2014 sessionManager state is ${this.sessionManager.state}, not ACTIVE`);
+      return;
+    }
     const handle = this.sessionManager.resumptionHandle;
     if (handle) {
       this.sessionManager.transitionTo("RECONNECTING");
@@ -3350,6 +3392,7 @@ var JsonMemoryStore = class {
   constructor(baseDir) {
     this.baseDir = baseDir;
   }
+  baseDir;
   async addFacts(userId, facts) {
     if (facts.length === 0) return;
     const filePath = this.filePath(userId);
