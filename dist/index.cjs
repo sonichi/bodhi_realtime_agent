@@ -3415,9 +3415,16 @@ ${recentMessages}` : "";
   handleTransportClose(code, reason) {
     const detail = code != null ? ` code=${code}${reason ? ` reason="${reason}"` : ""}` : "";
     this.log(`Transport closed (state=${this.sessionManager.state}${detail})`);
-    if (this.sessionManager.state === "ACTIVE" || this.sessionManager.state === "RECONNECTING") {
+    if (this.sessionManager.state === "ACTIVE") {
       this.log("Gemini disconnected \u2014 will reconnect fresh when client connects");
       this.sessionManager.transitionTo("CLOSED");
+      return;
+    }
+    if (this.sessionManager.state === "RECONNECTING") {
+      this.log(
+        "Transport close during RECONNECTING \u2014 state left unchanged, awaiting reconnect promise"
+      );
+      return;
     }
   }
   reportError(component, error) {

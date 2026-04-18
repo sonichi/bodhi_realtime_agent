@@ -923,11 +923,27 @@ export class VoiceSession {
 	private handleTransportClose(code?: number, reason?: string): void {
 		const detail = code != null ? ` code=${code}${reason ? ` reason="${reason}"` : ''}` : '';
 		this.log(`Transport closed (state=${this.sessionManager.state}${detail})`);
-		if (this.sessionManager.state === 'ACTIVE' || this.sessionManager.state === 'RECONNECTING') {
+		if (this.sessionManager.state === 'ACTIVE') {
 			// Go to CLOSED — the client-reconnect path in handleClientConnected()
 			// will do a fresh connect (no history replay) when a client connects.
 			this.log('Gemini disconnected — will reconnect fresh when client connects');
 			this.sessionManager.transitionTo('CLOSED');
+			return;
+		}
+		if (this.sessionManager.state === 'RECONNECTING') {
+			// Transport close during RECONNECTING is expected — `reconnect()` calls
+			// `disconnect()` on the old transport which fires this handler before
+			// the new connection is established. Letting this transition to CLOSED
+			// here would race with the reconnect promise, which then sees state ===
+			// CLOSED and bails out ("Reconnect succeeded but session already
+			// CLOSED"). That leaves the session permanently CLOSED and traps
+			// callers in a reconnect loop. Leave state alone; the reconnect
+			// promise handler owns the ACTIVE transition on success, and the
+			// catch path owns transitioning to CLOSED on failure.
+			this.log(
+				'Transport close during RECONNECTING — state left unchanged, awaiting reconnect promise',
+			);
+			return;
 		}
 	}
 
