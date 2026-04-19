@@ -493,16 +493,6 @@ var AgentRouter = class {
     this.extraTools = extraTools;
     this.subagentCallbacks = subagentCallbacks;
   }
-  sessionManager;
-  eventBus;
-  hooks;
-  conversationContext;
-  transport;
-  clientTransport;
-  model;
-  getInstructionSuffix;
-  extraTools;
-  subagentCallbacks;
   agents = /* @__PURE__ */ new Map();
   _activeAgent = null;
   activeSubagents = /* @__PURE__ */ new Map();
@@ -693,9 +683,6 @@ var BackgroundNotificationQueue = class {
     this.log = log;
     this.messageTruncation = messageTruncation;
   }
-  sendContent;
-  log;
-  messageTruncation;
   queue = [];
   audioReceived = false;
   interrupted = false;
@@ -1083,12 +1070,6 @@ var ConversationHistoryWriter = class {
     this.store = store;
     this.subscribe();
   }
-  sessionId;
-  userId;
-  initialAgentName;
-  eventBus;
-  conversationContext;
-  store;
   unsubscribers = [];
   analytics = {
     turnCount: 0,
@@ -1196,8 +1177,6 @@ var SessionManager = class {
     this.userId = config.userId;
     this.initialAgent = config.initialAgent;
   }
-  eventBus;
-  hooks;
   _state = "CREATED";
   _resumptionHandle = null;
   _bufferedMessages = [];
@@ -1305,8 +1284,6 @@ var MemoryCacheManager = class {
     this.store = store;
     this.userId = userId;
   }
-  store;
-  userId;
   cache = [];
   /** Reload cached facts from the store. Best-effort: keeps stale cache on failure. */
   async refresh() {
@@ -1482,7 +1459,6 @@ var TranscriptManager = class {
   constructor(sink) {
     this.sink = sink;
   }
-  sink;
   inputBuffer = "";
   outputBuffer = "";
   /** Pre-tool-call output text, saved when a tool call splits a turn. */
@@ -1777,10 +1753,6 @@ var MemoryDistiller = class {
     this.turnFrequency = config.turnFrequency ?? 5;
     this.extractionTimeoutMs = config.extractionTimeoutMs ?? DEFAULT_EXTRACTION_TIMEOUT_MS;
   }
-  conversationContext;
-  memoryStore;
-  hooks;
-  model;
   turnCount = 0;
   extractionInFlight = false;
   turnFrequency;
@@ -1874,12 +1846,6 @@ var ToolExecutor = class {
     this.sendJsonToClient = sendJsonToClient;
     this.setDirective = setDirective;
   }
-  hooks;
-  eventBus;
-  sessionId;
-  agentName;
-  sendJsonToClient;
-  setDirective;
   tools = /* @__PURE__ */ new Map();
   pending = /* @__PURE__ */ new Map();
   register(tools) {
@@ -2079,10 +2045,6 @@ var ClientTransport = class {
     this.host = host;
     this.listenTimeoutMs = listenTimeoutMs;
   }
-  port;
-  callbacks;
-  host;
-  listenTimeoutMs;
   wss = null;
   client = null;
   audioBuffer = new AudioBuffer();
@@ -2775,6 +2737,7 @@ var VoiceSession = class {
   memoryDistiller;
   memoryCacheManager;
   turnId = 0;
+  turnFirstAudioAt = null;
   sttProvider;
   _commitFiredForTurn = false;
   config;
@@ -3102,6 +3065,9 @@ var VoiceSession = class {
   }
   handleAudioOutput(data) {
     this.notificationQueue.markAudioReceived();
+    if (this.turnFirstAudioAt === null) {
+      this.turnFirstAudioAt = Date.now();
+    }
     const buffer = Buffer.from(data, "base64");
     this.clientTransport.sendAudioToClient(buffer);
   }
@@ -3135,6 +3101,15 @@ var VoiceSession = class {
       turnId: turnIdStr
     });
     this.clientTransport.sendJsonToClient({ type: "turn.end", turnId: turnIdStr });
+    if (this.turnFirstAudioAt !== null && this.hooks.onTurnLatency) {
+      const totalE2EMs = Date.now() - this.turnFirstAudioAt;
+      this.hooks.onTurnLatency({
+        sessionId: this.config.sessionId,
+        turnId: turnIdStr,
+        segments: { totalE2EMs }
+      });
+    }
+    this.turnFirstAudioAt = null;
     const agent = this.agentRouter.activeAgent;
     if (agent.onTurnCompleted) {
       const transcript = this.conversationContext.items.slice(-5).map((i) => `[${i.role}]: ${i.content}`).join("\n");
@@ -3189,6 +3164,7 @@ ${agent.greeting}` : agent.greeting;
     this.notificationQueue.resetAudio();
     this.notificationQueue.markInterrupted();
     this.transcriptManager.flush();
+    this.turnFirstAudioAt = null;
     this.eventBus.publish("turn.interrupted", {
       sessionId: this.config.sessionId,
       turnId: `turn_${this.turnId}`
@@ -3392,7 +3368,6 @@ var JsonMemoryStore = class {
   constructor(baseDir) {
     this.baseDir = baseDir;
   }
-  baseDir;
   async addFacts(userId, facts) {
     if (facts.length === 0) return;
     const filePath = this.filePath(userId);
