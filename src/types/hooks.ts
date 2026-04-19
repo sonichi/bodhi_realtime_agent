@@ -22,7 +22,20 @@ export interface FrameworkHooks {
 		reason: string;
 	}): void;
 
-	/** Fires at the end of each turn with segment-level latency breakdown. */
+	/**
+	 * Fires at the end of each turn with segment-level latency breakdown.
+	 *
+	 * NOTE on `segments.totalE2EMs` semantics: in the current minimum-viable
+	 * implementation this measures from first Sutando audio output → turn
+	 * complete (Sutando's response-production duration). This is NOT true
+	 * end-to-end user→response latency — the true user-done-speaking signal
+	 * would require Gemini VAD exposure that the transport layer doesn't
+	 * currently provide. Treat the value as a bounded-duration heuristic for
+	 * "Sutando took too long", not as network round-trip. The field name is
+	 * preserved for forward-compatibility: if a future bodhi change exposes
+	 * the VAD signal, the semantics can upgrade to full E2E without a
+	 * breaking rename.
+	 */
 	onTurnLatency?(event: {
 		sessionId: string;
 		turnId: string;

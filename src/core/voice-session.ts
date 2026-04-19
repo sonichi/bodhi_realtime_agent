@@ -115,6 +115,7 @@ export class VoiceSession {
 	private memoryDistiller?: MemoryDistiller;
 	private memoryCacheManager?: MemoryCacheManager;
 	private turnId = 0;
+	private turnFirstAudioAt: number | null = null;
 	private sttProvider?: STTProvider;
 	private _commitFiredForTurn = false;
 	private config: VoiceSessionConfig;
@@ -548,6 +549,9 @@ export class VoiceSession {
 
 	private handleAudioOutput(data: string): void {
 		this.notificationQueue.markAudioReceived();
+		if (this.turnFirstAudioAt === null) {
+			this.turnFirstAudioAt = Date.now();
+		}
 		const buffer = Buffer.from(data, 'base64');
 		this.clientTransport.sendAudioToClient(buffer);
 	}
@@ -592,6 +596,21 @@ export class VoiceSession {
 			turnId: turnIdStr,
 		});
 		this.clientTransport.sendJsonToClient({ type: 'turn.end', turnId: turnIdStr });
+
+		// Fire onTurnLatency hook with best-effort total duration.
+		// Minimum viable: measure from first Sutando audio output of the turn
+		// until turn complete. This is Sutando's speak+wait time, not full
+		// user→response latency — the true start requires a Gemini VAD signal
+		// bodhi doesn't expose. Useful as a bounded-duration heuristic.
+		if (this.turnFirstAudioAt !== null && this.hooks.onTurnLatency) {
+			const totalE2EMs = Date.now() - this.turnFirstAudioAt;
+			this.hooks.onTurnLatency({
+				sessionId: this.config.sessionId,
+				turnId: turnIdStr,
+				segments: { totalE2EMs },
+			});
+		}
+		this.turnFirstAudioAt = null;
 
 		// Notify active agent
 		const agent = this.agentRouter.activeAgent;
@@ -665,6 +684,13 @@ export class VoiceSession {
 		this.notificationQueue.resetAudio();
 		this.notificationQueue.markInterrupted();
 		this.transcriptManager.flush();
+		// Reset the turn-start marker so the NEXT turn gets a fresh
+		// `turnFirstAudioAt` when its first Sutando audio chunk arrives.
+		// Without this, turn N (interrupted) keeps the marker set, and
+		// turn N+1's handleAudioOutput `if (this.turnFirstAudioAt === null)`
+		// guard skips the update → turn N+1 reports latency measured from
+		// turn N's first audio chunk (stale) in handleTurnComplete.
+		this.turnFirstAudioAt = null;
 		this.eventBus.publish('turn.interrupted', {
 			sessionId: this.config.sessionId,
 			turnId: `turn_${this.turnId}`,

@@ -74,4 +74,20 @@ describe('HooksManager', () => {
 		}
 		expect(called).toBe(false);
 	});
+
+	it('registered onTurnLatency is invoked with segment payload', () => {
+		const mgr = new HooksManager();
+		const handler = vi.fn();
+		mgr.register({ onTurnLatency: handler });
+
+		const event = {
+			sessionId: 's',
+			turnId: 'turn_1',
+			segments: { totalE2EMs: 500 },
+		};
+		mgr.onTurnLatency?.(event);
+
+		expect(handler).toHaveBeenCalledOnce();
+		expect(handler).toHaveBeenCalledWith(event);
+	});
 });
