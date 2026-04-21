@@ -84,7 +84,9 @@ describe('ClaudeCodeSession', () => {
 		}
 
 		if (ORIGINAL_PATH === undefined) {
-			process.env.PATH = undefined;
+			// `= undefined` coerces to the string "undefined" (truthy) — use delete to actually unset.
+			// biome-ignore lint/performance/noDelete: `= undefined` is a truthy string on process.env; delete is the only way to actually unset.
+			delete process.env.PATH;
 		} else {
 			process.env.PATH = ORIGINAL_PATH;
 		}
