@@ -78,11 +78,13 @@ describe('SessionManager', () => {
 			expect(() => mgr.transitionTo('ACTIVE')).toThrow(SessionError);
 		});
 
-		it('CLOSED → anything throws', () => {
+		it('CLOSED → ACTIVE/RECONNECTING throws (CLOSED → CONNECTING is allowed for session revival)', () => {
 			const { mgr } = createManager();
 			mgr.transitionTo('CLOSED');
-			expect(() => mgr.transitionTo('CONNECTING')).toThrow(SessionError);
+			// CLOSED → CONNECTING is intentionally allowed (re-enter the lifecycle after close);
+			// direct jumps to ACTIVE or RECONNECTING remain invalid.
 			expect(() => mgr.transitionTo('ACTIVE')).toThrow(SessionError);
+			expect(() => mgr.transitionTo('RECONNECTING')).toThrow(SessionError);
 		});
 
 		it('CONNECTING → RECONNECTING throws', () => {
