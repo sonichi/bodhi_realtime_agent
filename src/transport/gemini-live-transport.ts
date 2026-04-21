@@ -556,11 +556,14 @@ export class GeminiLiveTransport implements LLMTransport {
 		// Emit file/inline-data items after the text context. Order within
 		// files is preserved; position relative to surrounding text is not
 		// exact but a bracketed marker above tells the model a file appeared.
+		// Delegate to sendFile() so the mimeType→slot mapping is identical
+		// to the fresh-send path (image/* → video, audio/* → audio, other →
+		// warn). Before #3's sendFile fix this used the deprecated `media`
+		// key, which Gemini 3.1 rejects with close code 1007 on the first
+		// reconnect that replays a file item.
 		for (const item of items) {
 			if (item.type === 'file') {
-				this.session.sendRealtimeInput({
-					media: { data: item.base64Data, mimeType: item.mimeType },
-				});
+				this.sendFile(item.base64Data, item.mimeType);
 			}
 		}
 	}
