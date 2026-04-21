@@ -181,7 +181,7 @@ describe('GeminiLiveTransport', () => {
 			transport.sendAudio('base64audiodata');
 
 			expect(mockSession.sendRealtimeInput).toHaveBeenCalledWith({
-				media: { data: 'base64audiodata', mimeType: 'audio/pcm;rate=16000' },
+				audio: { data: 'base64audiodata', mimeType: 'audio/pcm;rate=16000' },
 			});
 		});
 
