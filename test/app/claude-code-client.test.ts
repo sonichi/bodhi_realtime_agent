@@ -76,13 +76,17 @@ describe('ClaudeCodeSession', () => {
 
 	afterEach(() => {
 		if (ORIGINAL_CLAUDE_PATH === undefined) {
-			process.env.CLAUDE_PATH = undefined;
+			// `= undefined` coerces to the string "undefined" (truthy) — use delete to actually unset.
+			// biome-ignore lint/performance/noDelete: `= undefined` is a truthy string on process.env; delete is the only way to actually unset.
+			delete process.env.CLAUDE_PATH;
 		} else {
 			process.env.CLAUDE_PATH = ORIGINAL_CLAUDE_PATH;
 		}
 
 		if (ORIGINAL_PATH === undefined) {
-			process.env.PATH = undefined;
+			// `= undefined` coerces to the string "undefined" (truthy) — use delete to actually unset.
+			// biome-ignore lint/performance/noDelete: `= undefined` is a truthy string on process.env; delete is the only way to actually unset.
+			delete process.env.PATH;
 		} else {
 			process.env.PATH = ORIGINAL_PATH;
 		}
@@ -301,7 +305,9 @@ describe('ClaudeCodeSession', () => {
 
 	it('resolves Claude executable from PATH when CLAUDE_PATH is unset', async () => {
 		setupSimpleQuery([createMockInitMessage(), createMockResultMessage()]);
-		process.env.CLAUDE_PATH = undefined;
+		// `process.env.X = undefined` coerces to the string "undefined" (truthy) — use delete to actually unset.
+		// biome-ignore lint/performance/noDelete: `= undefined` is a truthy string on process.env; delete is the only way to actually unset.
+		delete process.env.CLAUDE_PATH;
 
 		const tempDir = mkdtempSync(path.join(os.tmpdir(), 'claude-path-test-'));
 		const binaryName = process.platform === 'win32' ? 'claude.cmd' : 'claude';
