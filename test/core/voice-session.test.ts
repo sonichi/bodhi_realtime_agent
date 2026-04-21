@@ -1705,11 +1705,14 @@ describe('VoiceSession', () => {
 			ctrl.reject(new Error('generation failed'));
 			await new Promise((r) => setTimeout(r, 100));
 
-			// Error notification should be queued, not sent
+			// Error notification should be queued, not sent.
+			// `GeminiLiveTransport.sendContent` flattens the turns[] into a single `text`
+			// string before calling `sendRealtimeInput({ text })` — match the flattened
+			// shape (same pattern as the other 3 tests in this describe block).
 			const contentCallsBefore = mockSess.sendRealtimeInput.mock.calls;
 			const errorBefore = contentCallsBefore.find((c: unknown[]) => {
-				const arg = c[0] as { turns?: Array<{ parts?: Array<{ text?: string }> }> };
-				return arg.turns?.some((t) => t.parts?.some((p) => p.text?.includes('failed')));
+				const arg = c[0] as { text?: string };
+				return typeof arg.text === 'string' && arg.text.includes('failed');
 			});
 			expect(errorBefore).toBeUndefined();
 
@@ -1719,8 +1722,8 @@ describe('VoiceSession', () => {
 
 			const contentCallsAfter = mockSess.sendRealtimeInput.mock.calls;
 			const errorAfter = contentCallsAfter.find((c: unknown[]) => {
-				const arg = c[0] as { turns?: Array<{ parts?: Array<{ text?: string }> }> };
-				return arg.turns?.some((t) => t.parts?.some((p) => p.text?.includes('failed')));
+				const arg = c[0] as { text?: string };
+				return typeof arg.text === 'string' && arg.text.includes('failed');
 			});
 			expect(errorAfter).toBeDefined();
 		});
