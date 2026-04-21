@@ -1421,7 +1421,11 @@ describe('VoiceSession', () => {
 			);
 		});
 
-		it('transitions to CLOSED when unexpected-close reconnect fails', async () => {
+		it('transitions straight to CLOSED on unexpected transport close (no in-session reconnect)', async () => {
+			// Per commit 78c103a ("simplified handleTransportClose — go straight to CLOSED"),
+			// handleTransportClose no longer attempts reconnect in-session. Reconnect happens
+			// only when a fresh client connects via handleClientConnected(), so onError is
+			// never fired from this path.
 			const onError = vi.fn();
 			session = new VoiceSession({
 				sessionId: 'sess_1',
@@ -1437,28 +1441,12 @@ describe('VoiceSession', () => {
 			await session.start();
 			await new Promise((r) => setTimeout(r, 50));
 
-			// Set a resumption handle so reconnect path is taken
-			session.sessionManager.updateResumptionHandle('handle_2');
-
-			// Spy on transport.reconnect to make it reject
-			const transportRef = (session as unknown as { transport: { reconnect: () => Promise<void> } })
-				.transport;
-			vi.spyOn(transportRef, 'reconnect').mockRejectedValueOnce(new Error('reconnect failed'));
-
 			// Directly invoke the private handleTransportClose since the WebSocket onclose
-			// callback is internal to the transport and not exposed through the mock
+			// callback is internal to the transport and not exposed through the mock.
 			(session as unknown as { handleTransportClose: () => void }).handleTransportClose();
 
-			// Wait for backoff delay (1000ms for first attempt) + reconnect execution
-			await new Promise((r) => setTimeout(r, 1500));
-
 			expect(session.sessionManager.state).toBe('CLOSED');
-			expect(onError).toHaveBeenCalledWith(
-				expect.objectContaining({
-					component: 'reconnect',
-					error: expect.objectContaining({ message: 'reconnect failed' }),
-				}),
-			);
+			expect(onError).not.toHaveBeenCalled();
 		});
 
 		it('ignores late-arriving GoAway after session is CLOSED', async () => {
