@@ -2598,9 +2598,7 @@ var GeminiLiveTransport = class {
     }
     for (const item of items) {
       if (item.type === "file") {
-        this.session.sendRealtimeInput({
-          media: { data: item.base64Data, mimeType: item.mimeType }
-        });
+        this.sendFile(item.base64Data, item.mimeType);
       }
     }
   }
