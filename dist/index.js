@@ -3300,19 +3300,19 @@ ${recent}`
         this.log("Gemini reconnected for client");
         const items = this.conversationContext.items;
         const recentMessages = items.filter((item) => item.role === "user" || item.role === "assistant").slice(-10).map((item) => `${item.role}: ${item.content.slice(0, 150)}`).join("\n");
-        const contextSummary = recentMessages ? `
-
-Previous conversation summary (for context, do not repeat):
-${recentMessages}` : "";
-        this.transport.sendContent(
-          [
-            {
-              role: "user",
-              text: `[System: You just reconnected after being idle. Say "I'm back" briefly. Do NOT repeat the full introduction.]${contextSummary}`
-            }
-          ],
-          true
-        );
+        if (recentMessages) {
+          this.transport.sendContent(
+            [
+              {
+                role: "user",
+                text: `[System: You just reconnected. Here is the recent conversation for context. Do not repeat or acknowledge this \u2014 just continue naturally when the user speaks next.]
+${recentMessages}`
+              }
+            ],
+            false
+          );
+          this.log("Injected conversation context on Gemini reconnect (silent)");
+        }
       }).catch((err) => {
         this.log(`Gemini reconnect failed: ${err instanceof Error ? err.message : err}`);
         this.reportError(

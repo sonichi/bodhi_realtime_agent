@@ -883,18 +883,33 @@ export class VoiceSession {
 						.slice(-10)
 						.map((item) => `${item.role}: ${item.content.slice(0, 150)}`)
 						.join('\n');
-					const contextSummary = recentMessages
-						? `\n\nPrevious conversation summary (for context, do not repeat):\n${recentMessages}`
-						: '';
-					this.transport.sendContent(
-						[
-							{
-								role: 'user',
-								text: `[System: You just reconnected after being idle. Say "I'm back" briefly. Do NOT repeat the full introduction.]${contextSummary}`,
-							},
-						],
-						true,
-					);
+					if (recentMessages) {
+						// Match the active-reconnect branch above: inject context
+						// silently with turnComplete=false so Gemini doesn't speak.
+						// Previously this used a prompting user turn ("Say 'I'm
+						// back' briefly") with turnComplete=true, which caused text
+						// bleed-through when the old session's last assistant
+						// message was truncated mid-utterance: Gemini would
+						// "complete" the truncated text AND follow the greeting
+						// instruction, concatenating both into one output. Observed
+						// 2026-04-24: "...通过实验证明Hello, Susan! Welcome back.
+						// I'm ready to continue our discussion about paper 1391
+						// whenever you are." where the Chinese text was the old
+						// turn's tail and the English was the reconnect greeting.
+						// Dropping the prompt and flipping turnComplete to false
+						// makes Gemini wait for the user's next real input before
+						// speaking.
+						this.transport.sendContent(
+							[
+								{
+									role: 'user',
+									text: `[System: You just reconnected. Here is the recent conversation for context. Do not repeat or acknowledge this — just continue naturally when the user speaks next.]\n${recentMessages}`,
+								},
+							],
+							false,
+						);
+						this.log('Injected conversation context on Gemini reconnect (silent)');
+					}
 				})
 				.catch((err) => {
 					this.log(`Gemini reconnect failed: ${err instanceof Error ? err.message : err}`);
