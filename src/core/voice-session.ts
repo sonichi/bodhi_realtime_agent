@@ -123,6 +123,12 @@ export class VoiceSession {
 	private transcriptManager!: TranscriptManager;
 	/** Whether a client WebSocket connection is currently active. */
 	private _clientConnected = false;
+	/** Set true before reconnecting from CLOSED so handleSetupComplete
+	 *  skips the greeting; reconnect path injects silent context instead.
+	 *  Needed because CLOSED→CONNECTING is the only legal path back, and
+	 *  the CONNECTING state alone doesn't tell handleSetupComplete that
+	 *  this is a reconnect (vs. an initial connect). */
+	private _skipNextGreeting = false;
 	/** Whether a browser client is currently connected via WebSocket. */
 	get clientConnected(): boolean {
 		return this._clientConnected;
@@ -563,11 +569,15 @@ export class VoiceSession {
 		if (this.sessionManager.state === 'CONNECTING') {
 			this.sessionManager.transitionTo('ACTIVE');
 		}
-		// During transfer or reconnect, the caller handles post-connect logic — skip greeting here
+		// During transfer or reconnect, the caller handles post-connect logic — skip greeting here.
+		// CLOSED→reconnect path uses _skipNextGreeting because the legal CLOSED→CONNECTING
+		// transition can't be distinguished from an initial connect by state alone.
 		if (
 			this.sessionManager.state === 'TRANSFERRING' ||
-			this.sessionManager.state === 'RECONNECTING'
+			this.sessionManager.state === 'RECONNECTING' ||
+			this._skipNextGreeting
 		) {
+			this._skipNextGreeting = false;
 			return;
 		}
 		if (this._clientConnected) {
@@ -863,10 +873,13 @@ export class VoiceSession {
 				}
 			}
 		} else if (this.sessionManager.state === 'CLOSED') {
-			// Gemini connection dropped (idle timeout / GoAway) — reconnect fresh
+			// Gemini connection dropped (idle timeout / GoAway) — reconnect fresh.
+			// Set _skipNextGreeting so handleSetupComplete() doesn't fire a greeting
+			// before this branch's silent context injection runs.
 			this.log('Gemini inactive — resetting session and reconnecting for new client...');
 			this.sessionManager.reset();
 			this.sessionManager.transitionTo('CONNECTING');
+			this._skipNextGreeting = true;
 			const connectPromise = this.config.transport
 				? this.transport.connect()
 				: this.transport.connect({
@@ -886,16 +899,13 @@ export class VoiceSession {
 					if (recentMessages) {
 						// Match the active-reconnect branch above: inject context
 						// silently with turnComplete=false so Gemini doesn't speak.
-						// Previously this used a prompting user turn ("Say 'I'm
-						// back' briefly") with turnComplete=true, which caused text
-						// bleed-through when the old session's last assistant
-						// message was truncated mid-utterance: Gemini would
-						// "complete" the truncated text AND follow the greeting
-						// instruction, concatenating both into one output. Observed
-						// 2026-04-24: "...通过实验证明Hello, Susan! Welcome back.
-						// I'm ready to continue our discussion about paper 1391
-						// whenever you are." where the Chinese text was the old
-						// turn's tail and the English was the reconnect greeting.
+						// Previously this used a prompting user turn (a "say
+						// hello" instruction) with turnComplete=true, which
+						// caused text bleed-through when the old session's last
+						// assistant message was truncated mid-utterance: Gemini
+						// would "complete" the truncated text AND follow the
+						// greeting instruction, concatenating both into one
+						// output (shape: "<previous turn tail><greeting>").
 						// Dropping the prompt and flipping turnComplete to false
 						// makes Gemini wait for the user's next real input before
 						// speaking.
