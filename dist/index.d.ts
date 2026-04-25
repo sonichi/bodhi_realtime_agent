@@ -1882,6 +1882,12 @@ declare class VoiceSession {
     private transcriptManager;
     /** Whether a client WebSocket connection is currently active. */
     private _clientConnected;
+    /** Set true before reconnecting from CLOSED so handleSetupComplete
+     *  skips the greeting; reconnect path injects silent context instead.
+     *  Needed because CLOSED→CONNECTING is the only legal path back, and
+     *  the CONNECTING state alone doesn't tell handleSetupComplete that
+     *  this is a reconnect (vs. an initial connect). */
+    private _skipNextGreeting;
     /** Whether a browser client is currently connected via WebSocket. */
     get clientConnected(): boolean;
     private notificationQueue;

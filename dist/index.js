@@ -2745,6 +2745,12 @@ var VoiceSession = class {
   transcriptManager;
   /** Whether a client WebSocket connection is currently active. */
   _clientConnected = false;
+  /** Set true before reconnecting from CLOSED so handleSetupComplete
+   *  skips the greeting; reconnect path injects silent context instead.
+   *  Needed because CLOSED→CONNECTING is the only legal path back, and
+   *  the CONNECTING state alone doesn't tell handleSetupComplete that
+   *  this is a reconnect (vs. an initial connect). */
+  _skipNextGreeting = false;
   /** Whether a browser client is currently connected via WebSocket. */
   get clientConnected() {
     return this._clientConnected;
@@ -3077,7 +3083,8 @@ var VoiceSession = class {
     if (this.sessionManager.state === "CONNECTING") {
       this.sessionManager.transitionTo("ACTIVE");
     }
-    if (this.sessionManager.state === "TRANSFERRING" || this.sessionManager.state === "RECONNECTING") {
+    if (this.sessionManager.state === "TRANSFERRING" || this.sessionManager.state === "RECONNECTING" || this._skipNextGreeting) {
+      this._skipNextGreeting = false;
       return;
     }
     if (this._clientConnected) {
@@ -3292,6 +3299,7 @@ ${recent}`
       this.log("Gemini inactive \u2014 resetting session and reconnecting for new client...");
       this.sessionManager.reset();
       this.sessionManager.transitionTo("CONNECTING");
+      this._skipNextGreeting = true;
       const connectPromise = this.config.transport ? this.transport.connect() : this.transport.connect({
         auth: { type: "api_key", apiKey: this.config.apiKey },
         model: this.config.geminiModel ?? "gemini-live-2.5-flash-preview"
@@ -3300,19 +3308,19 @@ ${recent}`
         this.log("Gemini reconnected for client");
         const items = this.conversationContext.items;
         const recentMessages = items.filter((item) => item.role === "user" || item.role === "assistant").slice(-10).map((item) => `${item.role}: ${item.content.slice(0, 150)}`).join("\n");
-        const contextSummary = recentMessages ? `
-
-Previous conversation summary (for context, do not repeat):
-${recentMessages}` : "";
-        this.transport.sendContent(
-          [
-            {
-              role: "user",
-              text: `[System: You just reconnected after being idle. Say "I'm back" briefly. Do NOT repeat the full introduction.]${contextSummary}`
-            }
-          ],
-          true
-        );
+        if (recentMessages) {
+          this.transport.sendContent(
+            [
+              {
+                role: "user",
+                text: `[System: You just reconnected. Here is the recent conversation for context. Do not repeat or acknowledge this \u2014 just continue naturally when the user speaks next.]
+${recentMessages}`
+              }
+            ],
+            false
+          );
+          this.log("Injected conversation context on Gemini reconnect (silent)");
+        }
       }).catch((err) => {
         this.log(`Gemini reconnect failed: ${err instanceof Error ? err.message : err}`);
         this.reportError(
