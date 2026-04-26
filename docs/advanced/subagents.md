@@ -2,6 +2,10 @@
 
 Subagents run in the background using the Vercel AI SDK while the voice model continues speaking to the user. They handle long-running operations that would otherwise block the voice stream.
 
+::: info OpenClaw Demo Routing Note
+In `examples/openclaw/openclaw-demo.ts`, OpenClaw is not configured to generate images or videos. Media generation requests should route to `generate_image` / `generate_video`, even if the user explicitly mentions OpenClaw.
+:::
+
 ## Why Subagents?
 
 The Realtime API is real-time — when you call an inline tool, the voice stream pauses until the tool returns. For operations that take more than a couple of seconds (report generation, multi-step workflows, coding tasks), subagents let the conversation continue naturally:
@@ -198,7 +202,7 @@ Fire-and-forget background work. The simplest pattern.
 ```typescript
 import { z } from 'zod';
 import { tool } from 'ai';
-import type { ToolDefinition, SubagentConfig } from '@bodhi_agent/realtime-agent-framework';
+import type { ToolDefinition, SubagentConfig } from 'bodhi-realtime-agent';
 
 // Background tool the model calls
 const generateReport: ToolDefinition = {
@@ -380,7 +384,7 @@ See [Claude Code Demo](#claude-code-demo) for a complete relay subagent implemen
 Service subagents monitor external systems and proactively notify the user. They run for the entire session, reacting to webhooks, database changes, or polling results.
 
 ```typescript
-import type { ServiceSubagentConfig, EventSourceConfig } from '@bodhi_agent/realtime-agent-framework';
+import type { ServiceSubagentConfig, EventSourceConfig } from 'bodhi-realtime-agent';
 
 const orderEvents: EventSourceConfig = {
   name: 'order-webhook',
@@ -431,36 +435,19 @@ generate_image subagent ──────► result queued   ↓
 
 **Notification pacing:** Results are flushed one per turn boundary to avoid overwhelming the user with a burst of audio notifications.
 
-### Parallel Tasking with External Agents
+### Artifact Passing Between Tools
 
-When delegating to an external agent (like OpenClaw), concurrent background calls can interfere if they share a single session key. The OpenClaw demo solves this with an `OpenClawTaskManager` that provides:
-
-- **Per-task session isolation** — Each background handoff gets its own OpenClaw session key via a thread registry, preventing cross-task context contamination.
-- **Concurrency limiting** — A semaphore (default max 10) prevents unbounded fan-out. Queued tasks get voice and GUI notifications.
-- **Write lock serialization** — Mutating operations on the same resource (e.g., two calendar reschedules) are serialized while independent tasks (calendar read + email send) run in parallel.
-- **Thread reuse for follow-ups** — A heuristic resolver matches follow-up requests (e.g., "confirm that reschedule") to the correct thread by domain and recency, without requiring the model to pass a thread ID.
-- **Retry on empty response** — Retries once when the external agent returns an empty completion, a common failure mode when sessions overlap.
-
-The task manager operates entirely in example code (`examples/openclaw/lib/openclaw-task-manager.ts`) — no framework API changes are needed. It hooks into the existing `createInstance()` factory pattern:
+When a background tool produces an artifact (e.g., a generated image), subsequent tools can reference it by ID via the `artifactIds` parameter:
 
 ```typescript
-const createInstance = (): SubagentConfig => {
-  const runState: OpenClawRunState = {};  // Isolated per handoff
-  return {
-    name: 'openclaw',
-    interactive: true,
-    instructions: relayInstructions,
-    tools: {
-      openclaw_chat: createOpenClawChatTool(client, taskManager, runState),
-    },
-  };
-};
-
-const baseConfig = createInstance();
-baseConfig.createInstance = createInstance;
+// Step 1: generate_image stores artifact, returns { artifactId: "art_xxx" }
+// Step 2: User says "email that image to me"
+// Step 3: Main LLM calls ask_openclaw({ task: "email...", artifactIds: ["art_xxx"] })
+// Step 4: Relay subagent resolves artifact from ArtifactRegistry
+// Step 5: chatSend() attaches base64 image to the external agent message
 ```
 
-Queue events are surfaced to the user via `session.notifyBackground()` (voice) and `gui.notification` (UI) so the user knows when tasks are waiting. See [VoiceSession > Background Notifications](/guide/voice-session#background-notifications).
+This uses **structured artifact IDs** rather than embedding base64 inline or parsing text descriptions. The `ArtifactRegistry` is per-session, in-memory, with FIFO eviction (max 20 artifacts or 50 MB, 30-min TTL). See [Tools > Artifact Pipeline](/guide/tools#artifact-pipeline-cross-tool-data-flow) for implementation details.
 
 ## Error Handling
 

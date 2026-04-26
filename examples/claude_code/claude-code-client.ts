@@ -101,8 +101,10 @@ interface SDKResultErrorMessage {
 }
 
 function resolveClaudeExecutablePath(): string {
-	const explicitPath = process.env.CLAUDE_PATH?.trim();
-	if (explicitPath) {
+	const explicitPathRaw = process.env.CLAUDE_PATH;
+	const explicitPath = explicitPathRaw?.trim();
+	const normalizedExplicitPath = explicitPath?.toLowerCase();
+	if (explicitPath && normalizedExplicitPath !== 'undefined' && normalizedExplicitPath !== 'null') {
 		return explicitPath;
 	}
 

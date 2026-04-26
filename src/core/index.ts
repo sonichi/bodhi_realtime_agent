@@ -43,6 +43,12 @@ export type { SessionStore } from './session-store.js';
 
 export { MemoryCacheManager } from './memory-cache-manager.js';
 
+export { MultiUserSessionManager } from './multi-user-session-manager.js';
+export type {
+	MultiUserSessionManagerConfig,
+	SessionMetadata,
+} from './multi-user-session-manager.js';
+
 export { ToolCallRouter } from './tool-call-router.js';
 export type { ToolCallRouterDeps } from './tool-call-router.js';
 

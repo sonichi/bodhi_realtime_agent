@@ -2,16 +2,18 @@
  * Bodhi + OpenClaw — Voice-Driven AI Agent Demo
  *
  * A voice assistant that combines Gemini's native capabilities (search, image/video
- * generation) with OpenClaw's general-purpose agent for coding, research, writing,
- * emails, and more.
+ * generation) with two OpenClaw-backed agents:
+ * - Work agent: email, calendar, scheduling, social/productivity tasks
+ * - General agent: coding, research, technical and multi-step tasks
  *
  * Features:
  * - Voice interface: Speak requests naturally
- * - OpenClaw agent: Delegates complex tasks (coding, research, email, etc.)
+ * - Dual agent routing: Delegates tasks to work/general agents
  * - Google Search: Real-time web search via Gemini's built-in grounding
  * - Image generation: Creates images via Gemini
  * - Video generation: Creates short videos via Veo
- * - Interactive delegation: OpenClaw can ask follow-up questions via voice
+ * - Interactive delegation: OpenClaw agents can ask follow-up questions via voice
+ * - Artifact sharing: Generated images can be forwarded to OpenClaw (e.g. "email that image")
  *
  * Usage:
  *   1. Start OpenClaw gateway (ws://127.0.0.1:18789 by default)
@@ -40,9 +42,16 @@ import { VoiceSession } from '../../src/core/voice-session.js';
 import { GeminiBatchSTTProvider } from '../../src/transport/gemini-batch-stt-provider.js';
 import type { MainAgent, SubagentConfig } from '../../src/types/agent.js';
 import type { ToolDefinition } from '../../src/types/tool.js';
-import { OpenClawClient } from './lib/openclaw-client.js';
-import { loadOrCreateDeviceIdentity } from './lib/openclaw-device-identity.js';
-import { askOpenClawTool, createOpenClawSubagentConfig } from './lib/openclaw-tools.js';
+import { ArtifactRegistry } from '../lib/artifact-registry.js';
+import { OpenClawHttpClient } from '../lib/openclaw-http-client.js';
+import type { OpenClawTransport } from '../lib/openclaw-transport.js';
+import { OpenClawClient } from '../lib/openclaw-client.js';
+import { loadOrCreateDeviceIdentity } from '../lib/openclaw-device-identity.js';
+import {
+	askGeneralAgentTool,
+	askWorkAgentTool,
+	createOpenClawSubagentConfig,
+} from '../lib/openclaw-tools.js';
 
 // =============================================================================
 // Helpers
@@ -66,7 +75,6 @@ const PORT = Number(process.env.PORT) || 9900;
 const HOST = process.env.HOST || '0.0.0.0';
 const OPENCLAW_URL = process.env.OPENCLAW_URL || 'ws://127.0.0.1:18789';
 const OPENCLAW_TOKEN = process.env.OPENCLAW_TOKEN || '';
-
 const SESSION_ID = `session_${Date.now()}`;
 const google = createGoogleGenerativeAI({ apiKey: API_KEY });
 
@@ -74,7 +82,7 @@ const google = createGoogleGenerativeAI({ apiKey: API_KEY });
 let sessionRef: VoiceSession | null = null;
 
 // =============================================================================
-// Tools
+// Static Tools (no registry dependency)
 // =============================================================================
 
 const getCurrentTime: ToolDefinition = {
@@ -91,8 +99,7 @@ const getCurrentTime: ToolDefinition = {
 
 const endSession: ToolDefinition = {
 	name: 'end_session',
-	description:
-		'End the voice session gracefully. Call this when the user says goodbye or is done.',
+	description: 'End the voice session gracefully. Call this when the user says goodbye or is done.',
 	parameters: z.object({}),
 	execution: 'inline',
 	execute: async (_args, ctx) => {
@@ -102,10 +109,6 @@ const endSession: ToolDefinition = {
 		return { status: 'ending' };
 	},
 };
-
-// -----------------------------------------------------------------------------
-// Image Generation (background tool → subagent)
-// -----------------------------------------------------------------------------
 
 const generateImage: ToolDefinition = {
 	name: 'generate_image',
@@ -120,54 +123,6 @@ const generateImage: ToolDefinition = {
 	pendingMessage: "I'm generating your image now. It'll appear on screen shortly.",
 	execute: async () => ({}),
 };
-
-const imageSubagent: SubagentConfig = {
-	name: 'image_generator',
-	instructions:
-		'You generate images. Call the create_image tool with the prompt from the task description. Return a short summary of what was generated.',
-	tools: {
-		create_image: tool({
-			description: 'Generate an image using Gemini and display it to the user.',
-			parameters: z.object({
-				prompt: z.string().describe('Image generation prompt'),
-			}),
-			execute: async ({ prompt }) => {
-				console.log(`${ts()} [Subagent] create_image: ${prompt}`);
-				const ai = new GoogleGenAI({ apiKey: API_KEY });
-				const response = await ai.models.generateContent({
-					model: 'gemini-2.5-flash-image',
-					contents: prompt,
-					config: { responseModalities: ['TEXT', 'IMAGE'] },
-				});
-
-				const parts = response.candidates?.[0]?.content?.parts ?? [];
-				for (const part of parts) {
-					if (part.inlineData?.data) {
-						sessionRef?.eventBus.publish('gui.update', {
-							sessionId: sessionRef.sessionManager.sessionId,
-							data: {
-								type: 'image',
-								base64: part.inlineData.data,
-								mimeType: part.inlineData.mimeType ?? 'image/png',
-								description: prompt,
-							},
-						});
-						console.log(`${ts()} [Subagent] Image ready: ${prompt}`);
-						return { status: 'success', description: `Generated image: ${prompt}` };
-					}
-				}
-
-				console.log(`${ts()} [Subagent] No image returned for: ${prompt}`);
-				return { status: 'no_image', description: `No image was returned for: ${prompt}` };
-			},
-		}),
-	},
-	maxSteps: 3,
-};
-
-// -----------------------------------------------------------------------------
-// Video Generation (background tool → subagent)
-// -----------------------------------------------------------------------------
 
 const generateVideo: ToolDefinition = {
 	name: 'generate_video',
@@ -184,176 +139,312 @@ const generateVideo: ToolDefinition = {
 	execute: async () => ({}),
 };
 
-const videoSubagent: SubagentConfig = {
-	name: 'video_generator',
-	instructions:
-		'You generate videos. Call the create_video tool with the prompt from the task arguments. Return a short summary of what was generated.',
-	tools: {
-		create_video: tool({
-			description: 'Generate a video using Veo and display it to the user.',
-			parameters: z.object({
-				prompt: z.string().describe('Video generation prompt'),
-			}),
-			execute: async ({ prompt }) => {
-				console.log(`${ts()} [Subagent] create_video: ${prompt}`);
-				const ai = new GoogleGenAI({ apiKey: API_KEY });
-
-				let operation = await ai.models.generateVideos({
-					model: 'veo-3.1-generate-preview',
-					prompt,
-					config: {
-						aspectRatio: '16:9',
-						personGeneration: 'allow_all',
-					},
-				});
-				console.log(`${ts()} [Subagent] Video generation started: ${operation.name}`);
-
-				while (!operation.done) {
-					await new Promise((r) => setTimeout(r, 10_000));
-					operation = await ai.operations.getVideosOperation({ operation });
-					console.log(`${ts()} [Subagent] Polling video... done=${operation.done}`);
-				}
-
-				const video = operation.response?.generatedVideos?.[0]?.video;
-				if (!video?.uri) {
-					console.log(`${ts()} [Subagent] No video returned for: ${prompt}`);
-					return { status: 'no_video', description: `No video was returned for: ${prompt}` };
-				}
-
-				const tmpPath = join(tmpdir(), `bodhi-video-${Date.now()}.mp4`);
-				await ai.files.download({ file: video, downloadPath: tmpPath });
-				const videoBytes = await readFile(tmpPath);
-				const base64 = videoBytes.toString('base64');
-				await unlink(tmpPath).catch(() => {});
-
-				sessionRef?.eventBus.publish('gui.update', {
-					sessionId: sessionRef.sessionManager.sessionId,
-					data: {
-						type: 'video',
-						base64,
-						mimeType: video.mimeType ?? 'video/mp4',
-						description: prompt,
-					},
-				});
-				console.log(`${ts()} [Subagent] Video ready: ${prompt}`);
-				return { status: 'success', description: `Generated video: ${prompt}` };
-			},
-		}),
-	},
-	maxSteps: 3,
-	timeout: 300_000,
-};
-
-// =============================================================================
-// Agent Definition
-// =============================================================================
-
-const mainAgent: MainAgent = {
-	name: 'main',
-	greeting: [
-		'[System: A user just connected. Greet them warmly. Introduce yourself as Bodhi,',
-		'a voice assistant with a powerful AI agent that can help with almost anything —',
-		'coding, research, writing, browsing the web, sending emails, generating images and videos.',
-		'Keep the greeting brief — 2-3 sentences max.]',
-	].join(' '),
-	instructions: [
-		'You are Bodhi, a voice assistant powered by a capable AI agent (OpenClaw).',
-		'Your main responsibilities are',
-		'- engaging with users,',
-		'- using built-in tools for narrow direct tasks (time, image, video, quick factual lookup),',
-		'- delegate all other tasks to OpenClaw.',
-		'OpenClaw is a general-purpose agent that can handle a wide range of tasks:',
-		'coding, calendar management,',
-		'file management, web browsing, research, writing, sending emails,',
-		'and much more. Do NOT assume it is limited to coding.',
-		'',
-		'TOOL ROUTING:',
-		'- get_current_time: For the current date/time.',
-		'- generate_image: When the user asks for any picture, image, card, or illustration.',
-		'- generate_video: When the user asks for a video, animation, or movie clip.',
-		'- Google Search: Use for factual lookups where the user wants an answer',
-		'  (weather, news, sports scores, "who is X", "what is Y") and no follow-up action.',
-		'- ask_openclaw: ALWAYS use this for any email intent — send, draft, rewrite, reply,',
-		'  forward, or "email this to ...". Do NOT handle email requests directly yourself.',
-		'- ask_openclaw: Also use for coding, calendar, file operations, research reports,',
-		'  writing tasks, and any multi-step request or task with a deliverable.',
-		'- ask_openclaw: If the request combines lookup + action (for example,',
-		'  "summarize today\'s tech news and email it"), route to OpenClaw.',
-		'  If unsure, route to OpenClaw.',
-		'- end_session: When the user says goodbye.',
-		'',
-		'VOICE RULES:',
-		'- Keep responses short and clear (2-3 sentences).',
-		'- Do NOT read code aloud — summarize what was done.',
-		'- When relaying results, focus on the outcome, not raw details.',
-		'',
-		'IMPORTANT:',
-		'- OpenClaw may ask follow-up questions — these will be relayed to the user via voice.',
-		'- For image/video generation, warn the user it may take a moment.',
-		'- Never claim an email was sent unless ask_openclaw has completed and said it was sent.',
-		'- DO NOT EXPOSE OPENCLAW or ANY INTERNAL PROCESS to USERs.',
-	].join('\n'),
-	tools: [askOpenClawTool, getCurrentTime, generateImage, generateVideo, endSession],
-	googleSearch: true,
-	onEnter: async () => {
-		console.log(`${ts()} [Agent] Main agent entered`);
-	},
-};
-
 // =============================================================================
 // Main
 // =============================================================================
 
 async function main() {
-	// Load or create Ed25519 device identity for gateway auth
-	const device = await loadOrCreateDeviceIdentity();
-	console.log(`${ts()} Device identity: ${device.deviceId.slice(0, 16)}...`);
+	// -------------------------------------------------------------------------
+	// Artifact Registry — per-session binary store for cross-tool sharing
+	// -------------------------------------------------------------------------
+	const artifactRegistry = new ArtifactRegistry();
 
-	// Connect to OpenClaw gateway
-	console.log(`${ts()} Connecting to OpenClaw gateway at ${OPENCLAW_URL}...`);
-	const openclawClient = new OpenClawClient({
-		url: OPENCLAW_URL,
-		token: OPENCLAW_TOKEN,
-		device,
-	});
-	await openclawClient.connect();
-	console.log(`${ts()} OpenClaw gateway connected.`);
+	// -------------------------------------------------------------------------
+	// Image Subagent — closes over artifactRegistry for artifact storage
+	// -------------------------------------------------------------------------
+	const imageSubagent: SubagentConfig = {
+		name: 'image_generator',
+		instructions:
+			'You generate images. Call the create_image tool with the prompt from the task description. Return a short summary of what was generated.',
+		tools: {
+			create_image: tool({
+				description: 'Generate an image using Gemini and display it to the user.',
+				parameters: z.object({
+					prompt: z.string().describe('Image generation prompt'),
+				}),
+				execute: async ({ prompt }) => {
+					console.log(`${ts()} [Subagent] create_image: ${prompt}`);
+					const ai = new GoogleGenAI({ apiKey: API_KEY });
+					const response = await ai.models.generateContent({
+						model: 'gemini-2.5-flash-image',
+						contents: prompt,
+						config: { responseModalities: ['TEXT', 'IMAGE'] },
+					});
 
-	// Create the interactive subagent config for OpenClaw
-	const queuedNotices = new Map<string, number>();
-	const openclawSubagent = createOpenClawSubagentConfig(openclawClient, SESSION_ID, {
-		onQueueEvent: (event) => {
-			console.log(
-				`${ts()} [OpenClawQueue] taskId=${event.taskId} stage=${event.stage} waitMs=${event.waitMs} queueLength=${event.queueLength}${event.lockKey ? ` lockKey=${event.lockKey}` : ''}`,
-			);
-			const dedupeKey = `${event.taskId}:${event.stage}`;
-			if (queuedNotices.has(dedupeKey)) return;
-			if (queuedNotices.size >= 512) {
-				const cutoff = Date.now() - 60_000;
-				for (const [key, timestamp] of queuedNotices) {
-					if (timestamp < cutoff) queuedNotices.delete(key);
-				}
-				if (queuedNotices.size >= 512) queuedNotices.clear();
-			}
-			queuedNotices.set(dedupeKey, Date.now());
-			const message =
-				event.stage === 'semaphore'
-					? 'All background agents are currently busy. Your task is queued and will start shortly.'
-					: 'A calendar or email update is waiting for another update to finish.';
-			sessionRef?.notifyBackground(message);
-			sessionRef?.eventBus.publish('gui.notification', {
-				sessionId: SESSION_ID,
-				message,
-			});
+					const parts = response.candidates?.[0]?.content?.parts ?? [];
+					for (const part of parts) {
+						if (part.inlineData?.data) {
+							const mimeType = part.inlineData.mimeType ?? 'image/png';
+
+							// Store in artifact registry for cross-tool access
+							let artifactId: string | undefined;
+							try {
+								artifactId = artifactRegistry.store(
+									part.inlineData.data,
+									mimeType,
+									prompt,
+									'generated',
+								);
+							} catch (err) {
+								console.warn(
+									`${ts()} [Subagent] Failed to store image artifact: ${err instanceof Error ? err.message : String(err)}`,
+								);
+							}
+
+							sessionRef?.eventBus.publish('gui.update', {
+								sessionId: sessionRef.sessionManager.sessionId,
+								data: {
+									type: 'image',
+									base64: part.inlineData.data,
+									mimeType,
+									description: prompt,
+									artifactId,
+								},
+							});
+							console.log(`${ts()} [Subagent] Image ready: ${prompt}`);
+							return {
+								status: 'success',
+								description: `Generated image: ${prompt}`,
+								artifactId,
+							};
+						}
+					}
+
+					console.log(`${ts()} [Subagent] No image returned for: ${prompt}`);
+					return { status: 'no_image', description: `No image was returned for: ${prompt}` };
+				},
+			}),
 		},
-		onThreadResolved: (event) => {
-			console.log(
-				`${ts()} [OpenClawThread] taskId=${event.taskId} threadId=${event.threadId} domain=${event.domain} reason=${event.reason}`,
-			);
-		},
-	});
+		maxSteps: 3,
+	};
 
-	// Start voice session
+	// -------------------------------------------------------------------------
+	// Video Subagent — same pattern but no registry storage (videos are large)
+	// -------------------------------------------------------------------------
+	const videoSubagent: SubagentConfig = {
+		name: 'video_generator',
+		instructions:
+			'You generate videos. Call the create_video tool with the prompt from the task arguments. Return a short summary of what was generated.',
+		tools: {
+			create_video: tool({
+				description: 'Generate a video using Veo and display it to the user.',
+				parameters: z.object({
+					prompt: z.string().describe('Video generation prompt'),
+				}),
+				execute: async ({ prompt }) => {
+					console.log(`${ts()} [Subagent] create_video: ${prompt}`);
+					const ai = new GoogleGenAI({ apiKey: API_KEY });
+
+					let operation = await ai.models.generateVideos({
+						model: 'veo-3.1-generate-preview',
+						prompt,
+						config: {
+							aspectRatio: '16:9',
+							personGeneration: 'allow_all',
+						},
+					});
+					console.log(`${ts()} [Subagent] Video generation started: ${operation.name}`);
+
+					while (!operation.done) {
+						await new Promise((r) => setTimeout(r, 10_000));
+						operation = await ai.operations.getVideosOperation({ operation });
+						console.log(`${ts()} [Subagent] Polling video... done=${operation.done}`);
+					}
+
+					const video = operation.response?.generatedVideos?.[0]?.video;
+					if (!video?.uri) {
+						console.log(`${ts()} [Subagent] No video returned for: ${prompt}`);
+						return {
+							status: 'no_video',
+							description: `No video was returned for: ${prompt}`,
+						};
+					}
+
+					const tmpPath = join(tmpdir(), `bodhi-video-${Date.now()}.mp4`);
+					await ai.files.download({ file: video, downloadPath: tmpPath });
+					const videoBytes = await readFile(tmpPath);
+					const base64 = videoBytes.toString('base64');
+					await unlink(tmpPath).catch(() => {});
+
+					sessionRef?.eventBus.publish('gui.update', {
+						sessionId: sessionRef.sessionManager.sessionId,
+						data: {
+							type: 'video',
+							base64,
+							mimeType: video.mimeType ?? 'video/mp4',
+							description: prompt,
+						},
+					});
+					console.log(`${ts()} [Subagent] Video ready: ${prompt}`);
+					return { status: 'success', description: `Generated video: ${prompt}` };
+				},
+			}),
+		},
+		maxSteps: 3,
+		timeout: 300_000,
+	};
+
+	// -------------------------------------------------------------------------
+	// list_artifacts tool — inline tool for LLM artifact discovery
+	// -------------------------------------------------------------------------
+	const listArtifacts: ToolDefinition = {
+		name: 'list_artifacts',
+		description:
+			'List all available artifacts (uploaded files, generated images) in this session. ' +
+			'Call this before delegating to ask_work_agent or ask_general_agent when the user references a file or image ' +
+			'that needs to be attached.',
+		parameters: z.object({}),
+		execution: 'inline',
+		execute: async () => ({
+			artifacts: artifactRegistry.list(),
+		}),
+	};
+
+	// -------------------------------------------------------------------------
+	// Main Agent — closes over artifactRegistry via listArtifacts tool
+	// -------------------------------------------------------------------------
+	const mainAgent: MainAgent = {
+		name: 'main',
+		greeting: [
+			'[System: A user just connected. Greet them warmly. Introduce yourself as Bodhi,',
+			'a voice assistant with powerful AI agents that can help with almost anything —',
+			'coding, research, writing, browsing the web, sending emails, generating images and videos.',
+			'Keep the greeting brief — 2-3 sentences max.]',
+		].join(' '),
+		instructions: [
+			'You are Bodhi, a voice assistant powered by two specialized AI agents.',
+			'You have a WORK agent for productivity tasks and a GENERAL agent for technical tasks.',
+			'Neither agent is configured for image or video generation.',
+			'',
+			'AGENT ROUTING — pick the right agent for each task:',
+			'',
+			'ask_work_agent (WORK tasks):',
+			'- Email: send, draft, reply, forward, rewrite. Do NOT handle email yourself.',
+			'- Calendar and scheduling requests.',
+			'- Xiaohongshu/XHS (小红书): post, draft, publish, browse, search.',
+			'- Social media: any post, draft, or publishing task.',
+			'- Document writing: reports, memos, letters, spreadsheets.',
+			'- Any productivity or business task.',
+			'',
+			'ask_general_agent (TECHNICAL/COMPLEX tasks):',
+			'- Coding: write, debug, review, refactor, explain code.',
+			'- Research: investigate topics, summarize findings, compare options.',
+			'- Web browsing: look up documentation, scrape data, visit URLs.',
+			'- Data analysis: parse files, process data, generate charts.',
+			'- File operations: read, create, modify files on disk.',
+			'- Multi-step investigations and any technical task.',
+			'',
+			'If a task combines WORK + TECHNICAL (e.g., "summarize today\'s tech news and email it"),',
+			'route to ask_work_agent — it can do the research and send the email in one shot.',
+			'If unsure, route to ask_general_agent.',
+			'',
+			'OTHER TOOLS:',
+			'- Google Search: Quick factual lookups — weather, news, "who is X". Gemini handles natively.',
+			'- generate_image: ANY picture, image, card, illustration, or visual generation.',
+			'- generate_video: ANY video, animation, or movie clip.',
+			'- get_current_time: Current date/time.',
+			'- list_artifacts: Call BEFORE ask_work_agent or ask_general_agent when the user',
+			'  references an uploaded file or image. Pass artifactIds in the tool call.',
+			'- end_session: When the user says goodbye.',
+			'',
+			'ARTIFACT ROUTING:',
+			'- "send that image" / "email that picture" → list_artifacts first, then ask_work_agent',
+			'  with artifactIds. Never embed artifact IDs in the task text.',
+			'',
+			'VOICE RULES:',
+			'- Keep responses short and clear (2-3 sentences).',
+			'- Do NOT read code aloud — summarize what was done.',
+			'- When relaying results, focus on the outcome, not raw details.',
+			'',
+			'IMPORTANT:',
+			'- Agents may ask follow-up questions — relay them to the user via voice.',
+			'- Do NOT route image/video generation to either agent.',
+			'- Never claim an email was sent unless the work agent confirmed it.',
+			'- Do not expose internal routing or agent names to the user.',
+		].join('\n'),
+		tools: [
+			askWorkAgentTool,
+			askGeneralAgentTool,
+			getCurrentTime,
+			generateImage,
+			generateVideo,
+			listArtifacts,
+			endSession,
+		],
+		googleSearch: true,
+		onEnter: async () => {
+			console.log(`${ts()} [Agent] Main agent entered`);
+		},
+	};
+
+	// -------------------------------------------------------------------------
+	// Gateway connection (HTTP over Tailscale or local WebSocket)
+	// -------------------------------------------------------------------------
+	let openclawClient: OpenClawTransport;
+	const OPENCLAW_HTTP_URL = process.env.OPENCLAW_HTTP_URL;
+
+	if (OPENCLAW_HTTP_URL) {
+		// Remote mode — HTTP over Tailscale
+		const httpToken = process.env.OPENCLAW_HTTP_TOKEN ?? process.env.OPENCLAW_GATEWAY_TOKEN ?? '';
+		console.log(`${ts()} Using HTTP mode: ${OPENCLAW_HTTP_URL}`);
+		openclawClient = new OpenClawHttpClient({
+			url: OPENCLAW_HTTP_URL,
+			token: httpToken,
+			model: process.env.OPENCLAW_MODEL || 'openclaw/default',
+		});
+		await openclawClient.connect(); // no-op for HTTP
+		console.log(`${ts()} OpenClaw HTTP client ready.`);
+	} else {
+		// Local mode — WebSocket
+		const device = await loadOrCreateDeviceIdentity();
+		console.log(`${ts()} Device identity: ${device.deviceId.slice(0, 16)}...`);
+
+		console.log(`${ts()} Connecting to OpenClaw gateway at ${OPENCLAW_URL}...`);
+		openclawClient = new OpenClawClient({
+			url: OPENCLAW_URL,
+			token: OPENCLAW_TOKEN,
+			device,
+		});
+		await openclawClient.connect();
+		console.log(`${ts()} OpenClaw gateway connected.`);
+	}
+
+	// Switch model for both sessions. Keep HTTP and WebSocket defaults aligned
+	// with gateway expectations for each transport mode.
+	const openclawModel =
+		process.env.OPENCLAW_MODEL ||
+		(OPENCLAW_HTTP_URL ? 'openclaw/default' : 'openai/gpt-5.4');
+	const workSessionId = `${SESSION_ID}_work`;
+	const generalSessionId = `${SESSION_ID}_general`;
+	await openclawClient.setModel(openclawClient.sessionKey(workSessionId), openclawModel);
+	await openclawClient.setModel(openclawClient.sessionKey(generalSessionId), openclawModel);
+
+	// Note: eventBus is accessed lazily via sessionRef (set after VoiceSession creation).
+	const subagentOptions = {
+		artifactRegistry,
+		get eventBus() {
+			return sessionRef?.eventBus;
+		},
+		sessionId: SESSION_ID,
+	};
+
+	// Work agent — email, calendar, XHS, productivity tasks
+	const workSubagent = createOpenClawSubagentConfig(
+		openclawClient,
+		workSessionId,
+		subagentOptions,
+	);
+
+	// General agent — coding, research, web browsing, complex tasks
+	const generalSubagent = createOpenClawSubagentConfig(
+		openclawClient,
+		generalSessionId,
+		subagentOptions,
+	);
+
+	// -------------------------------------------------------------------------
+	// Voice Session
+	// -------------------------------------------------------------------------
 	const session = new VoiceSession({
 		sessionId: SESSION_ID,
 		userId: 'demo_user',
@@ -363,8 +454,10 @@ async function main() {
 		port: PORT,
 		host: HOST,
 		model: google('gemini-2.5-flash'),
+		artifactRegistry,
 		subagentConfigs: {
-			ask_openclaw: openclawSubagent,
+			ask_work_agent: workSubagent,
+			ask_general_agent: generalSubagent,
 			generate_image: imageSubagent,
 			generate_video: videoSubagent,
 		},
@@ -420,6 +513,7 @@ async function main() {
 		console.log(`\n${ts()} Shutting down...`);
 		await session.close('user_hangup');
 		await openclawClient.close();
+		artifactRegistry.dispose();
 		process.exit(0);
 	};
 	process.on('SIGINT', shutdown);
@@ -433,7 +527,7 @@ async function main() {
 	console.log('============================================================');
 	console.log();
 	console.log(`  Voice agent:     ws://localhost:${PORT}`);
-	console.log(`  OpenClaw:        ${OPENCLAW_URL}`);
+	console.log(`  OpenClaw:        ${OPENCLAW_HTTP_URL ?? OPENCLAW_URL}`);
 	console.log(`  Session ID:      ${SESSION_ID}`);
 	console.log();
 	console.log('Start the web client in another terminal:');
@@ -442,8 +536,8 @@ async function main() {
 	console.log('Then open http://localhost:8080 and try saying:');
 	console.log("  - 'What is the weather in San Francisco?'  (Google Search)");
 	console.log("  - 'Draw me a picture of a sunset'          (Image generation)");
-	console.log("  - 'Write a Python prime checker'           (OpenClaw agent)");
-	console.log("  - 'Summarize today's tech news by email'   (OpenClaw agent)");
+	console.log("  - 'Write a Python prime checker'           (General agent)");
+	console.log("  - 'Summarize today's tech news by email'   (Work agent)");
 	console.log("  - 'Goodbye'");
 	console.log();
 	console.log('Press Ctrl+C to stop.');
