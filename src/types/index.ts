@@ -45,6 +45,11 @@ export type { MemoryCategory, MemoryFact, MemoryStore } from './memory.js';
 export type { QueuedNotification } from './notification.js';
 
 export type {
+	IClientChannel,
+	SessionClientSender,
+} from './session-client.js';
+
+export type {
 	PendingToolCall,
 	ResumptionState,
 	ResumptionUpdate,
@@ -60,6 +65,12 @@ export type {
 	ContentTurn,
 	LLMTransport,
 	LLMTransportConfig,
+	RealtimeLLMUsageEvent,
+	RealtimeUsageKind,
+	RealtimeUsageModalityBreakdown,
+	RealtimeUsagePhase,
+	RealtimeUsageProvider,
+	RealtimeUsageUnit,
 	ReconnectState,
 	ReplayItem,
 	SessionUpdate,
@@ -73,4 +84,8 @@ export type {
 	TransportToolResult,
 } from './transport.js';
 
+export type { TTSAudioConfig, TTSProvider } from './tts.js';
+
 export type { UIResponse } from './ui.js';
+
+export type { ArtifactRef, ArtifactStore, SaveArtifactParams } from './workspace.js';

@@ -13,7 +13,7 @@ const VALID_TRANSITIONS: Record<SessionState, SessionState[]> = {
 	ACTIVE: ['RECONNECTING', 'TRANSFERRING', 'CLOSED'],
 	RECONNECTING: ['ACTIVE', 'CLOSED'],
 	TRANSFERRING: ['ACTIVE', 'CLOSED'],
-	CLOSED: ['CONNECTING'],
+	CLOSED: [],
 };
 
 /**
@@ -55,13 +55,6 @@ export class SessionManager {
 
 	get resumptionHandle(): string | null {
 		return this._resumptionHandle;
-	}
-
-	/** Reset to CREATED state — allows a fresh session after CLOSED. */
-	reset(): void {
-		this._state = 'CREATED';
-		this._resumptionHandle = null;
-		this._bufferedMessages = [];
 	}
 
 	transitionTo(newState: SessionState): void {

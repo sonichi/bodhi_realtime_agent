@@ -1,37 +1,12 @@
 {
   "name": "bodhi-realtime-agent",
-  "version": "0.1.5",
-  "description": "Voice agent framework with parallel background subagents — your agent keeps talking while long-running tasks run in the background. Built on Gemini Live API.",
-  "keywords": [
-    "ai",
-    "agent",
-    "ai-agent",
-    "voice",
-    "voice-agent",
-    "voice-ai",
-    "realtime",
-    "gemini",
-    "gemini-live",
-    "google",
-    "framework",
-    "agentic-framework",
-    "background-tasks",
-    "subagent",
-    "multi-agent",
-    "speech-to-speech",
-    "conversational-ai"
-  ],
-  "homepage": "https://github.com/randombet/bodhi_realtime_agent#readme",
-  "bugs": {
-    "url": "https://github.com/randombet/bodhi_realtime_agent/issues"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/randombet/bodhi_realtime_agent.git"
-  },
-  "license": "MIT",
-  "author": "Yixuan Zhai",
+  "version": "0.2.0",
+  "private": false,
+  "description": "TypeScript framework for real-time voice agent applications using Google Gemini Live API",
   "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "import": {
@@ -44,40 +19,34 @@
       }
     }
   },
-  "main": "./dist/index.cjs",
-  "types": "./dist/index.d.ts",
   "files": [
-    "dist",
-    "LICENSE",
-    "README.md"
+    "dist"
   ],
-  "sideEffects": false,
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "biome check src/ test/",
-    "lint:fix": "biome check --fix src/ test/",
+    "lint:fix": "biome check --fix src/",
     "typecheck": "tsc --noEmit",
-    "prepare": "git rev-parse --git-dir > /dev/null 2>&1 && git config core.hooksPath .githooks || true",
-    "postinstall": "[ -d dist ] || (command -v tsup > /dev/null 2>&1 && tsup || true)",
-    "prepublishOnly": "pnpm build && pnpm test",
     "docs:dev": "vitepress dev docs",
     "docs:build": "typedoc && vitepress build docs",
     "docs:preview": "vitepress preview docs"
   },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "MIT",
   "dependencies": {
     "@ai-sdk/google": "^1.2.0",
     "@google/genai": "^1.41.0",
     "ai": "^4.3.0",
-    "dotenv": "^17.3.1",
+    "dotenv": "^16.4.5",
     "openai": "^6.25.0",
+    "twilio": "^5.13.1",
     "write-file-atomic": "^6.0.0",
     "ws": "^8.18.0",
     "zod": "^3.24.0"
-  },
-  "optionalDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
@@ -86,30 +55,20 @@
     "@types/ws": "^8.5.0",
     "mermaid": "^11.12.2",
     "tsup": "^8.4.0",
-    "tsx": "^4.21.0",
+    "tsx": "^4.8.1",
     "typedoc": "^0.28.17",
-    "typedoc-plugin-markdown": "^4.6.4",
+    "typedoc-plugin-markdown": "^4.10.0",
     "typedoc-vitepress-theme": "^1.1.2",
     "typescript": "^5.7.0",
     "vitepress": "^1.6.4",
     "vitepress-plugin-mermaid": "^2.0.17",
     "vitest": "^3.0.0"
   },
-  "publishConfig": {
-    "access": "public",
-    "provenance": true,
-    "registry": "https://registry.npmjs.org"
-  },
-  "engines": {
-    "node": ">=22.0.0"
-  },
   "pnpm": {
     "onlyBuiltDependencies": [
       "@biomejs/biome",
       "esbuild"
-    ],
-    "ignoredBuiltDependencies": [
-      "protobufjs"
     ]
-  }
+  },
+  "packageManager": "pnpm@10.18.3+sha512.bbd16e6d7286fd7e01f6b3c0b3c932cda2965c06a908328f74663f10a9aea51f1129eea615134bf992831b009eabe167ecb7008b597f40ff9bc75946aadfb08d"
 }

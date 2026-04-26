@@ -5,7 +5,8 @@ import typedocSidebar from '../api/typedoc-sidebar.json';
 export default withMermaid(
 	defineConfig({
 		title: 'Bodhi Realtime Agent Framework',
-		description: 'TypeScript framework for real-time voice agents — supports Google Gemini Live and OpenAI Realtime APIs',
+		description:
+			'TypeScript framework for real-time voice agents — supports Google Gemini Live and OpenAI Realtime APIs',
 		base: '/bodhi_realtime_agent/',
 		ignoreDeadLinks: [/^http:\/\/localhost/],
 
@@ -45,8 +46,10 @@ export default withMermaid(
 						text: 'Advanced Topics',
 						items: [
 							{ text: 'Subagent Patterns', link: '/advanced/subagents' },
-							{ text: 'Persistence', link: '/advanced/persistence' },
 							{ text: 'Multimodal Features', link: '/advanced/multimodal' },
+							{ text: 'External TTS', link: '/advanced/tts' },
+							{ text: 'Telephony', link: '/advanced/telephony' },
+							{ text: 'Persistence', link: '/advanced/persistence' },
 							{ text: 'Deployment', link: '/advanced/deployment' },
 						],
 					},
@@ -54,9 +57,7 @@ export default withMermaid(
 				'/api/': typedocSidebar,
 			},
 
-			socialLinks: [
-				{ icon: 'github', link: 'https://github.com/randombet/bodhi_realtime_agent' },
-			],
+			socialLinks: [{ icon: 'github', link: 'https://github.com/randombet/bodhi_realtime_agent' }],
 
 			search: {
 				provider: 'local',

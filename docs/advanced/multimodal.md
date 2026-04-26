@@ -139,7 +139,7 @@ Users can ask the voice agent to speak slower or faster during a conversation. T
 
 ```typescript
 import { z } from 'zod';
-import type { ToolDefinition, ToolContext } from '@bodhi/realtime-agent-framework';
+import type { ToolDefinition, ToolContext } from 'bodhi-realtime-agent';
 
 const setSpeechSpeed: ToolDefinition = {
   name: 'set_speech_speed',

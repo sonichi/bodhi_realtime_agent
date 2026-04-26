@@ -2,25 +2,25 @@
  * Web Audio Client for Bodhi Voice Agent
  *
  * Usage:
- *   1. Start the voice agent:  pnpm tsx examples/hello_world/agent.ts
+ *   1. Start the voice agent:  pnpm tsx examples/gemini-realtime-tools.ts
  *   2. Start this client:      pnpm tsx examples/web-client.ts
- *   3. Open http://localhost:8080 in your browser
+ *   3. Open http://localhost:8080 in Chrome
  *   4. Click "Connect" and allow microphone access
  */
 
+import 'dotenv/config';
 import { createServer } from 'node:http';
 
 const HTTP_PORT = Number(process.env.CLIENT_PORT) || 8080;
 const HTTP_HOST = process.env.CLIENT_HOST || '0.0.0.0'; // '0.0.0.0' binds to all interfaces for EC2
 const WS_PORT = Number(process.env.PORT) || 9900;
-const DEFAULT_WS_URL = `ws://localhost:${WS_PORT}`;
 
 const HTML = /* html */ `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sutando</title>
+<title>Bodhi Voice Agent</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -82,8 +82,8 @@ const HTML = /* html */ `<!DOCTYPE html>
   .t-assistant { color: #a5d6a7; }
   .t-assistant::before { content: 'Agent: '; font-weight: 600; }
   .t-system { color: #888; font-style: italic; font-size: 12px; }
-  .t-interim { color: #64b5f6; opacity: 0.6; font-size: 13px; }
-  .t-interim::before { content: 'You: '; font-weight: 600; }
+  .t-interim { color: #4a6a9f; opacity: 0.6; font-size: 13px; }
+  .t-interim::before { content: 'You (hearing): '; font-weight: 600; }
   #debug {
     width: 100%; max-width: 700px;
     background: #0a0a15; border-radius: 12px; padding: 12px 14px;
@@ -112,22 +112,16 @@ const HTML = /* html */ `<!DOCTYPE html>
   .btn-upload:hover { background: #3a3a5e; color: #fff; }
   .btn-send { background: #1e3a5f; color: #fff; }
   .btn-send:hover { background: #2a4a6f; }
-  .btn-download {
-    display: inline-block; margin-top: 6px; padding: 4px 10px;
-    border-radius: 6px; border: 1px solid #444; background: #1a1a2e;
-    color: #aaa; font-size: 11px; cursor: pointer; text-decoration: none;
-  }
-  .btn-download:hover { background: #2a2a4e; color: #fff; }
 </style>
 </head>
 <body>
 
-<h1>Sutando</h1>
-<p class="sub">Your personal AI</p>
+<h1>Bodhi Voice Agent</h1>
+<p class="sub">Real-time voice client for testing</p>
 
 <div class="panel">
   <div class="row">
-    <input type="text" id="wsUrl" value="${DEFAULT_WS_URL}" />
+    <input type="text" id="wsUrl" placeholder="Auto-detected from server..." />
     <button id="btn" class="btn-connect" onclick="toggle()">Connect</button>
     <button class="btn-save" onclick="saveDebug()">Save Debug</button>
   </div>
@@ -155,8 +149,8 @@ const HTML = /* html */ `<!DOCTYPE html>
 
 <script>
 // ─── Config ───────────────────────────────────────────────
-let INPUT_RATE  = 16000;
-let OUTPUT_RATE = 24000;
+const INPUT_RATE  = 16000;
+const OUTPUT_RATE = 24000;
 const CAPTURE_BUF = 2048;
 const WS_PORT = ${WS_PORT};
 
@@ -171,13 +165,12 @@ function getDefaultWsUrl() {
   return protocol + '//' + hostname + ':' + WS_PORT;
 }
 
-// Set default WebSocket URL on page load + init Chrome STT
+// Set default WebSocket URL on page load
 window.addEventListener('DOMContentLoaded', () => {
   const wsUrlInput = $('wsUrl');
   if (wsUrlInput && !wsUrlInput.value) {
     wsUrlInput.value = getDefaultWsUrl();
   }
-  initChromeStt();
 });
 
 // ─── State ────────────────────────────────────────────────
@@ -185,6 +178,7 @@ let ws = null;
 let audioCtx = null;
 let micStream = null;
 let processor = null;
+let recognition = null;
 let connected = false;
 let nextPlayTime = 0;
 let activeSources = [];
@@ -195,89 +189,24 @@ let audioChunksRecv = 0;
 let playChunkCount = 0;
 let statsTimer = null;
 
-// Chrome STT state — provides real-time interim display; server STT replaces with final
-let recognition = null;
-
 const debugLog = [];
 const $ = (id) => document.getElementById(id);
-
-// ─── Chrome STT (real-time interim display) ───────────────
-function initChromeStt() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) {
-    dbg('Browser does not support SpeechRecognition — no interim transcripts available', 'warn');
-    return;
-  }
-  recognition = new SR();
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.lang = 'en-US';
-
-  recognition.onresult = (event) => {
-    let interim = '';
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      interim += event.results[i][0].transcript;
-    }
-    if (interim) showChromeSttInterim(interim);
-  };
-
-  recognition.onerror = (event) => {
-    if (event.error !== 'no-speech') dbg('Chrome STT error: ' + event.error, 'warn');
-  };
-
-  recognition.onend = () => {
-    if (connected) {
-      try { recognition.start(); } catch {}
-    }
-  };
-}
-
-function showChromeSttInterim(text) {
-  if (serverUserTextReceived) return;  // server text is authoritative — don't overwrite
-  if (!currentUserEl) {
-    currentUserEl = document.createElement('div');
-    currentUserEl.className = 't-entry t-interim';
-    $('transcript').appendChild(currentUserEl);
-  }
-  currentUserEl.textContent = text;
-  $('transcript').scrollTop = $('transcript').scrollHeight;
-}
-
-function startChromeStt() {
-  if (!recognition) return;
-  try { recognition.start(); } catch {}
-}
-
-function stopChromeStt() {
-  if (recognition) { try { recognition.stop(); } catch {} }
-}
 
 // ─── Transcript ───────────────────────────────────────────
 let currentUserEl = null;
 let currentAssistantEl = null;
-let serverUserTextReceived = false;  // blocks Chrome STT overwrites after server sends
+let interimEl = null; // for live speech-to-text preview
 
 function handleTranscript(role, text, partial) {
+  removeInterim();
   if (role === 'user') {
-    dbg('[Server STT] ' + (partial ? 'partial' : 'FINAL') + ': ' + text);
-    serverUserTextReceived = true;
-    if (partial) {
-      if (!currentUserEl) {
-        currentUserEl = document.createElement('div');
-        currentUserEl.className = 't-entry t-interim';
-        $('transcript').appendChild(currentUserEl);
-      }
-      currentUserEl.textContent = text;
-    } else {
-      // Final transcript — update in-place for correct ordering
-      if (!currentUserEl) {
-        currentUserEl = document.createElement('div');
-        $('transcript').appendChild(currentUserEl);
-      }
+    if (!currentUserEl) {
+      currentUserEl = document.createElement('div');
       currentUserEl.className = 't-entry t-user';
-      currentUserEl.textContent = text;
-      currentUserEl = null;
+      $('transcript').appendChild(currentUserEl);
     }
+    currentUserEl.textContent = text;
+    if (!partial) currentUserEl = null;
   } else {
     if (!currentAssistantEl) {
       currentAssistantEl = document.createElement('div');
@@ -290,7 +219,22 @@ function handleTranscript(role, text, partial) {
   $('transcript').scrollTop = $('transcript').scrollHeight;
 }
 
+function showInterim(text) {
+  if (!interimEl) {
+    interimEl = document.createElement('div');
+    interimEl.className = 't-entry t-interim';
+    $('transcript').appendChild(interimEl);
+  }
+  interimEl.textContent = text;
+  $('transcript').scrollTop = $('transcript').scrollHeight;
+}
+
+function removeInterim() {
+  if (interimEl) { interimEl.remove(); interimEl = null; }
+}
+
 function addSystem(text) {
+  removeInterim();
   const el = document.createElement('div');
   el.className = 't-entry t-system';
   el.textContent = text;
@@ -382,14 +326,9 @@ function int16ToFloat32(buf) {
 
 // ─── Audio playback (gapless scheduling) ──────────────────
 function playChunk(arrayBuf) {
-  if (!audioCtx || audioCtx.state === 'closed') {
-    try {
-      audioCtx = new AudioContext();
-      dbg('playChunk: created new AudioContext: ' + audioCtx.sampleRate + ' Hz');
-    } catch (e) {
-      dbg('playChunk: failed to create AudioContext: ' + e, 'err');
-      return;
-    }
+  if (!audioCtx) {
+    dbg('playChunk: no audioCtx!', 'err');
+    return;
   }
   if (audioCtx.state === 'suspended') {
     audioCtx.resume();
@@ -427,6 +366,63 @@ function playChunk(arrayBuf) {
   } catch (err) {
     dbg('playChunk error: ' + err.message, 'err');
   }
+}
+
+// ─── Local speech recognition (browser STT) ──────────────
+function startSpeechRecognition() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    dbg('Web Speech API not available in this browser', 'warn');
+    addSystem('Speech-to-text not available (use Chrome for live transcription).');
+    return;
+  }
+
+  recognition = new SpeechRecognition();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+  recognition.maxAlternatives = 1;
+
+  recognition.onresult = (event) => {
+    let interim = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const r = event.results[i];
+      if (r.isFinal) {
+        dbg('Speech final: "' + r[0].transcript.trim() + '"', 'event');
+      } else {
+        interim += r[0].transcript;
+      }
+    }
+    if (interim) showInterim(interim);
+  };
+
+  recognition.onerror = (event) => {
+    if (event.error !== 'no-speech' && event.error !== 'aborted') {
+      dbg('Speech recognition error: ' + event.error, 'warn');
+    }
+  };
+
+  recognition.onend = () => {
+    // Auto-restart if still connected
+    if (connected && recognition) {
+      try { recognition.start(); } catch {}
+    }
+  };
+
+  try {
+    recognition.start();
+    dbg('Speech recognition started');
+  } catch (err) {
+    dbg('Failed to start speech recognition: ' + err.message, 'warn');
+  }
+}
+
+function stopSpeechRecognition() {
+  if (recognition) {
+    try { recognition.abort(); } catch {}
+    recognition = null;
+  }
+  removeInterim();
 }
 
 // ─── Microphone capture ───────────────────────────────────
@@ -494,12 +490,12 @@ async function startMic() {
   dbg('Mic capture started');
   addSystem('Microphone active — speak now.');
 
-  // Start Chrome STT for real-time interim display (server final replaces)
-  startChromeStt();
+  // Start browser speech recognition for local transcription
+  startSpeechRecognition();
 }
 
 function stopMic() {
-  stopChromeStt();
+  stopSpeechRecognition();
   if (processor) { processor.disconnect(); processor = null; }
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
   // Don't close audioCtx here — playback may still be draining
@@ -524,10 +520,21 @@ function connectWs() {
       setStatus('Live — speak now', 'live');
       statsTimer = setInterval(updateStats, 500);
     } catch (err) {
-      dbg('Mic error: ' + err.message, 'err');
-      setStatus('Mic error', 'error');
-      addSystem('Microphone access denied. Please allow and retry.');
-      ws.close();
+	      dbg('Mic error: ' + err.message, 'err');
+	      setStatus('Mic error', 'error');
+
+	      // Provide specific error message based on the error
+      if (err.message.includes('HTTPS')) {
+        addSystem('❌ Microphone requires HTTPS. Please access via https://your-domain.com or use localhost.');
+      } else if (err.message.includes('not available')) {
+        addSystem('❌ Microphone access not available. Please use a modern browser.');
+      } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        addSystem('❌ Microphone access denied. Please allow microphone access and retry.');
+	      } else {
+	        addSystem('❌ Microphone error: ' + err.message);
+	      }
+
+	      ws.close();
     }
   };
 
@@ -544,112 +551,33 @@ function connectWs() {
         const msg = JSON.parse(event.data);
         dbg('Recv: ' + JSON.stringify(msg), 'event');
 
-        if (msg.type === 'session.config' && msg.audioFormat) {
-          INPUT_RATE = msg.audioFormat.inputSampleRate;
-          OUTPUT_RATE = msg.audioFormat.outputSampleRate;
-          dbg('Audio format configured: input=' + INPUT_RATE + 'Hz output=' + OUTPUT_RATE + 'Hz', 'event');
-        } else if (msg.type === 'transcript') {
+        if (msg.type === 'transcript') {
           handleTranscript(msg.role, msg.text, msg.partial !== false);
         } else if (msg.type === 'turn.end') {
-          // Remove orphaned Chrome STT interim — if server never finalized it,
-          // it's echo from the assistant's voice picked up by mic.
-          if (currentUserEl && currentUserEl.classList.contains('t-interim')) {
-            currentUserEl.remove();
-          }
           currentUserEl = null;
           currentAssistantEl = null;
-          serverUserTextReceived = false;
         } else if (msg.type === 'turn.interrupted') {
           for (const s of activeSources) {
             try { s.stop(); } catch {}
           }
           activeSources = [];
           nextPlayTime = 0;
-          if (currentUserEl && currentUserEl.classList.contains('t-interim')) {
-            currentUserEl.remove();
-          }
           currentUserEl = null;
           currentAssistantEl = null;
-          serverUserTextReceived = false;
         } else if (msg.type === 'gui.update') {
-          const guiData = msg.payload?.data;
-          if (guiData?.type === 'subprocess_log' && guiData.line) {
-            dbg('subprocess  ' + guiData.line, 'audio');
-          } else if (guiData?.type === 'image' && guiData.base64) {
-            const imgEl = document.createElement('div');
-            imgEl.className = 't-entry t-system';
-            const img = document.createElement('img');
-            const imgDataUrl = 'data:' + (guiData.mimeType || 'image/png') + ';base64,' + guiData.base64;
-            img.src = imgDataUrl;
-            img.alt = guiData.description || 'Generated image';
-            img.style.maxWidth = '100%';
-            img.style.borderRadius = '8px';
-            img.style.marginTop = '8px';
-            imgEl.appendChild(img);
-            const dlLink = document.createElement('a');
-            dlLink.className = 'btn-download';
-            dlLink.href = imgDataUrl;
-            const ext = (guiData.mimeType || 'image/png').split('/')[1] || 'png';
-            dlLink.download = 'generated-image-' + Date.now() + '.' + ext;
-            dlLink.textContent = 'Download image';
-            imgEl.appendChild(dlLink);
-            $('transcript').appendChild(imgEl);
-            $('transcript').scrollTop = $('transcript').scrollHeight;
-            dbg('Image received via gui.update: ' + (guiData.description || '').slice(0, 50), 'event');
-          } else if (guiData?.type === 'video' && guiData.base64) {
-            const vidEl = document.createElement('div');
-            vidEl.className = 't-entry t-system';
-            const vidDataUrl = 'data:' + (guiData.mimeType || 'video/mp4') + ';base64,' + guiData.base64;
-            const video = document.createElement('video');
-            video.src = vidDataUrl;
-            video.controls = true;
-            video.autoplay = true;
-            video.muted = true;
-            video.style.maxWidth = '100%';
-            video.style.borderRadius = '8px';
-            video.style.marginTop = '8px';
-            if (guiData.description) {
-              const caption = document.createElement('div');
-              caption.style.fontSize = '12px';
-              caption.style.color = '#888';
-              caption.style.marginTop = '4px';
-              caption.textContent = guiData.description;
-              vidEl.appendChild(caption);
-            }
-            vidEl.appendChild(video);
-            const dlLink = document.createElement('a');
-            dlLink.className = 'btn-download';
-            dlLink.href = vidDataUrl;
-            const vidExt = (guiData.mimeType || 'video/mp4').split('/')[1] || 'mp4';
-            dlLink.download = 'generated-video-' + Date.now() + '.' + vidExt;
-            dlLink.textContent = 'Download video';
-            vidEl.appendChild(dlLink);
-            $('transcript').appendChild(vidEl);
-            $('transcript').scrollTop = $('transcript').scrollHeight;
-            dbg('Video received via gui.update: ' + (guiData.description || '').slice(0, 50), 'event');
-          } else {
-            addSystem('[gui] ' + JSON.stringify(guiData));
-          }
+          addSystem('[gui] ' + JSON.stringify(msg.payload?.data));
         } else if (msg.type === 'gui.notification') {
           addSystem('[notification] ' + (msg.payload?.message || ''));
         } else if (msg.type === 'image') {
           const imgEl = document.createElement('div');
           imgEl.className = 't-entry t-system';
           const img = document.createElement('img');
-          const legacyDataUrl = 'data:' + (msg.data.mimeType || 'image/png') + ';base64,' + msg.data.base64;
-          img.src = legacyDataUrl;
+          img.src = 'data:' + (msg.data.mimeType || 'image/png') + ';base64,' + msg.data.base64;
           img.alt = msg.data.description || 'Generated image';
           img.style.maxWidth = '100%';
           img.style.borderRadius = '8px';
           img.style.marginTop = '8px';
           imgEl.appendChild(img);
-          const dlLink2 = document.createElement('a');
-          dlLink2.className = 'btn-download';
-          dlLink2.href = legacyDataUrl;
-          const ext2 = (msg.data.mimeType || 'image/png').split('/')[1] || 'png';
-          dlLink2.download = 'generated-image-' + Date.now() + '.' + ext2;
-          dlLink2.textContent = 'Download image';
-          imgEl.appendChild(dlLink2);
           $('transcript').appendChild(imgEl);
           $('transcript').scrollTop = $('transcript').scrollHeight;
           dbg('Image received: ' + (msg.data.description || '').slice(0, 50), 'event');
@@ -657,12 +585,6 @@ function connectWs() {
           const speeds = { slow: 0.85, normal: 1.0, fast: 1.2 };
           playbackRate = speeds[msg.speed] || 1.0;
           addSystem('[speed] Speech speed set to ' + msg.speed + ' (' + playbackRate + 'x)');
-        } else if (msg.type === 'session_end') {
-          addSystem('Session ended by voice command.');
-          dbg('session_end received — disconnecting', 'event');
-          connected = false; // prevent auto-reconnect
-          if (ws) { ws.close(); ws = null; }
-          doCleanup();
         } else if (msg.type === 'grounding') {
           const chunks = msg.payload?.groundingChunks;
           if (Array.isArray(chunks) && chunks.length > 0) {
@@ -677,25 +599,9 @@ function connectWs() {
   };
 
   ws.onclose = (e) => {
-    dbg('WS closed: code=' + e.code + ' reason=' + e.reason);
-    // Server-initiated clean close (goodbye code 4000) or user clicked Disconnect
-    const wasCleanDisconnect = !connected || e.code === 4000;
-    if (wasCleanDisconnect) connected = false;
+    dbg('WS closed: code=' + e.code);
+    addSystem('Disconnected from agent.');
     doCleanup();
-    if (wasCleanDisconnect) {
-      addSystem('Disconnected.');
-    } else {
-      // Unexpected drop (Gemini timeout) — auto-reconnect
-      addSystem('Connection lost — reconnecting in 3s...');
-      setStatus('Reconnecting...', 'error');
-      setTimeout(() => {
-        if (!connected) {
-          dbg('Auto-reconnecting...');
-          addSystem('Reconnecting...');
-          toggle();
-        }
-      }, 3000);
-    }
   };
 
   ws.onerror = () => {
@@ -726,7 +632,6 @@ function toggle() {
     doCleanup();
   } else {
     // Create AudioContext HERE in the click handler so browsers allow playback
-    // Use system default sample rate — it handles resampling from OUTPUT_RATE internally
     audioCtx = new AudioContext();
     dbg('AudioContext created on click: state=' + audioCtx.state + ' sampleRate=' + audioCtx.sampleRate);
 
@@ -752,15 +657,6 @@ function sendText() {
 
   ws.send(JSON.stringify({ type: 'text_input', text }));
   input.value = '';
-
-  // Show typed text in the conversation
-  currentUserEl = null; // finalize any in-progress user speech
-  const el = document.createElement('div');
-  el.className = 't-entry t-user';
-  el.textContent = text;
-  $('transcript').appendChild(el);
-  $('transcript').scrollTop = $('transcript').scrollHeight;
-
   dbg('Sent text: "' + text.slice(0, 50) + '"', 'event');
 }
 

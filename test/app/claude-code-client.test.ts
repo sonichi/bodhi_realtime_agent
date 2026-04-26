@@ -16,6 +16,10 @@ const { ClaudeCodeSession } = await import('../../examples/claude_code/claude-co
 const ORIGINAL_CLAUDE_PATH = process.env.CLAUDE_PATH;
 const ORIGINAL_PATH = process.env.PATH;
 
+function unsetEnv(name: 'CLAUDE_PATH' | 'PATH'): void {
+	Reflect.deleteProperty(process.env, name);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers — create mock async generators that simulate SDK behavior
 // ---------------------------------------------------------------------------
@@ -76,13 +80,13 @@ describe('ClaudeCodeSession', () => {
 
 	afterEach(() => {
 		if (ORIGINAL_CLAUDE_PATH === undefined) {
-			process.env.CLAUDE_PATH = undefined;
+			unsetEnv('CLAUDE_PATH');
 		} else {
 			process.env.CLAUDE_PATH = ORIGINAL_CLAUDE_PATH;
 		}
 
 		if (ORIGINAL_PATH === undefined) {
-			process.env.PATH = undefined;
+			unsetEnv('PATH');
 		} else {
 			process.env.PATH = ORIGINAL_PATH;
 		}
@@ -301,7 +305,38 @@ describe('ClaudeCodeSession', () => {
 
 	it('resolves Claude executable from PATH when CLAUDE_PATH is unset', async () => {
 		setupSimpleQuery([createMockInitMessage(), createMockResultMessage()]);
-		process.env.CLAUDE_PATH = undefined;
+		unsetEnv('CLAUDE_PATH');
+
+		const tempDir = mkdtempSync(path.join(os.tmpdir(), 'claude-path-test-'));
+		const binaryName = process.platform === 'win32' ? 'claude.cmd' : 'claude';
+		const binaryPath = path.join(tempDir, binaryName);
+
+		try {
+			writeFileSync(binaryPath, process.platform === 'win32' ? '@echo off\r\n' : '#!/bin/sh\n');
+			if (process.platform !== 'win32') {
+				chmodSync(binaryPath, 0o755);
+			}
+
+			process.env.PATH = ORIGINAL_PATH ? `${tempDir}${path.delimiter}${ORIGINAL_PATH}` : tempDir;
+
+			const session = new ClaudeCodeSession({ cwd: '/test' });
+			await session.start('Task');
+
+			expect(mockQuery).toHaveBeenCalledWith(
+				expect.objectContaining({
+					options: expect.objectContaining({
+						pathToClaudeCodeExecutable: binaryPath,
+					}),
+				}),
+			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it('treats CLAUDE_PATH="undefined" as unset and resolves from PATH', async () => {
+		setupSimpleQuery([createMockInitMessage(), createMockResultMessage()]);
+		process.env.CLAUDE_PATH = 'undefined';
 
 		const tempDir = mkdtempSync(path.join(os.tmpdir(), 'claude-path-test-'));
 		const binaryName = process.platform === 'win32' ? 'claude.cmd' : 'claude';
