@@ -6,7 +6,7 @@ import {
 	OpenClawTaskManager,
 	OpenClawTaskQueueTimeoutError,
 	type OpenClawThreadEvent,
-} from '../../examples/openclaw/lib/openclaw-task-manager.js';
+} from '../../examples/lib/openclaw-task-manager.js';
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));

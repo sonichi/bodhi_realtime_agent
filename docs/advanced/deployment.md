@@ -1,6 +1,6 @@
 # Deployment
 
-This guide covers deploying the framework in production: environment variables, error handling, graceful shutdown, and session management.
+This guide covers deploying the framework in production: configuration, multi-user session ownership, WebSocket routing, error handling, graceful shutdown, and optional telephony ingress.
 
 ## Environment Variables
 
@@ -8,12 +8,21 @@ This guide covers deploying the framework in production: environment variables, 
 |----------|----------|-------------|
 | `GOOGLE_API_KEY` | For Gemini | Google Gemini API key |
 | `OPENAI_API_KEY` | For OpenAI | OpenAI API key |
+| `LLM_PROVIDER` | No | `gemini` or `openai` for server-level defaults |
 | `PORT` | No | WebSocket server port (default: 9900) |
+| `HOST` | No | Bind host (default: `0.0.0.0`) |
+| `MAX_SESSIONS_PER_USER` | No | Per-user session cap for `MultiUserSessionManager` |
+| `MAX_TOTAL_SESSIONS` | No | Total active session cap |
+| `SESSION_TIMEOUT_MS` | No | Idle timeout before cleanup |
+| `TWILIO_INBOUND_ENABLED` | No | Enables Twilio inbound bridge config when `true` |
+| `TWILIO_WEBHOOK_URL` | For Twilio | Public HTTPS URL used by Twilio webhooks |
 
 ```bash
-# .env — set the key for your chosen provider
+# .env - set the key for your chosen provider
 GOOGLE_API_KEY=your_gemini_key_here
 OPENAI_API_KEY=your_openai_key_here
+LLM_PROVIDER=gemini
+HOST=0.0.0.0
 PORT=9900
 ```
 
@@ -73,40 +82,81 @@ const session = new VoiceSession({
 | `error` | Log, alert, continue with degraded functionality |
 | `fatal` | Log, alert, close session and restart |
 
-## Session Management
+## Configuration Loader
 
-For production deployments handling multiple concurrent users, create one `VoiceSession` per user connection:
+`loadConfig()` centralizes server configuration from environment variables and validates production controls:
 
 ```typescript
-import { createServer } from 'http';
+import { loadConfig, validateConfig } from 'bodhi-realtime-agent';
 
-const httpServer = createServer();
-const sessions = new Map<string, VoiceSession>();
+const config = loadConfig();
+validateConfig(config);
+```
 
-// Create a new session for each user
-function createSession(userId: string): VoiceSession {
-  const sessionId = `session_${Date.now()}_${userId}`;
-  const session = new VoiceSession({
-    sessionId,
-    userId,
-    apiKey: process.env.GOOGLE_API_KEY!,
+It includes provider choice, API keys, auth placeholders, rate limits, session limits, logging, and optional Twilio inbound settings.
+
+## Session Management
+
+For production deployments handling multiple concurrent users, create one `VoiceSession` per user connection and track it through `MultiUserSessionManager`:
+
+```typescript
+import {
+  MultiUserSessionManager,
+  VoiceSession,
+} from 'bodhi-realtime-agent';
+
+const sessions = new MultiUserSessionManager({
+  maxSessionsPerUser: 5,
+  maxTotalSessions: 1000,
+  sessionTimeoutMs: 30 * 60 * 1000,
+});
+
+async function createUserSession(userId: string) {
+  const session = await sessions.createSession(userId, {
+    apiKey: process.env.GEMINI_API_KEY!,
     agents: [mainAgent],
     initialAgent: 'main',
-    port: 0, // Dynamically assigned
+    model,
+    clientSender,
   });
 
-  sessions.set(sessionId, session);
+  await session.start();
   return session;
 }
+```
 
-// Clean up on disconnect
-async function destroySession(sessionId: string) {
-  const session = sessions.get(sessionId);
-  if (session) {
-    await session.close('user_disconnect');
-    sessions.delete(sessionId);
-  }
-}
+Call `updateActivity(sessionId)` when a client sends input. Call `closeSession(sessionId, reason)` when a client disconnects or auth expires. The manager also cleans idle sessions on an interval.
+
+## Multi-Client WebSocket Routing
+
+Use `MultiClientTransport` when a single server owns the WebSocket listener and routes messages to many sessions:
+
+```typescript
+import { MultiClientTransport } from 'bodhi-realtime-agent';
+
+const clientTransport = new MultiClientTransport(config.port, {
+  async onConnection(ws, context) {
+    const userId = authenticate(ws, context.request);
+    const session = await createUserSession(userId);
+    clientTransport.bindConnection(ws, session.getSessionId(), userId);
+    session.notifyClientConnected();
+  },
+  onAudioFromClient(_ws, data, context) {
+    sessions.getSession(context.sessionId!)?.feedAudioFromClient(data);
+    sessions.updateActivity(context.sessionId!);
+  },
+  onJsonFromClient(_ws, message, context) {
+    sessions.getSession(context.sessionId!)?.feedJsonFromClient(message);
+    sessions.updateActivity(context.sessionId!);
+  },
+  async onDisconnection(_ws, context) {
+    if (context.sessionId) {
+      await sessions.closeSession(context.sessionId, 'client_disconnect');
+    }
+  },
+});
+
+await clientTransport.start();
 ```
 
 ## Health Checks
@@ -123,6 +173,29 @@ hooks: {
   onSessionEnd: () => metrics.gauge('active_sessions', sessions.size),
 }
 ```
+
+For `MultiUserSessionManager`, prefer `getStats()` for health endpoints:
+
+```typescript
+app.get('/health', (_req, res) => {
+  res.json({
+    ok: true,
+    sessions: sessions.getStats(),
+  });
+});
+```
+
+## Telephony Ingress
+
+Twilio integrations need a public HTTPS webhook URL and a WebSocket path that Twilio can reach. The built-in examples use ngrok locally:
+
+```bash
+ngrok http 8766
+TWILIO_WEBHOOK_URL=https://xxxx.ngrok-free.app
+TWILIO_WEBHOOK_PORT=8766
+```
+
+Use [Telephony](/advanced/telephony) for outbound human transfer and inbound phone-call bridge setup.
 
 ## GitHub Pages Deployment
 

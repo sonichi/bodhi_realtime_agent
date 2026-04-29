@@ -1,15 +1,15 @@
 # Bodhi + OpenClaw — Voice-Driven AI Agent Demo
 
-A voice assistant that combines Gemini's native capabilities (search, image/video generation) with OpenClaw's general-purpose agent for coding, research, writing, emails, and more.
+A voice assistant that combines Gemini's native capabilities (search, image/video generation) with two OpenClaw-backed agents: a work agent (email/calendar/productivity) and a general agent (coding/research/technical tasks).
 
 ## Features
 
 - **Voice interface**: Speak requests naturally via Chrome
-- **OpenClaw agent**: Delegates complex tasks (coding, research, email, file operations, multi-step tasks)
+- **Dual OpenClaw agents**: Work agent for productivity tasks; general agent for technical/complex tasks
 - **Google Search**: Real-time web search via Gemini's built-in grounding
 - **Image generation**: Creates images via Gemini (`gemini-2.5-flash-image`)
 - **Video generation**: Creates short videos via Veo (`veo-3.1-generate-preview`)
-- **Interactive delegation**: OpenClaw can ask follow-up questions relayed via voice
+- **Interactive delegation**: OpenClaw agents can ask follow-up questions relayed via voice
 
 ## Architecture
 
@@ -112,8 +112,8 @@ The device ID is printed in the demo startup log (first 16 characters of the SHA
 | "What is the weather in San Francisco?" | Google Search (Gemini native grounding) |
 | "Draw me a picture of a sunset" | Image generation via Gemini subagent |
 | "Make a short video of ocean waves" | Video generation via Veo subagent |
-| "Write a Python prime checker" | OpenClaw agent (coding) |
-| "Summarize today's tech news by email" | OpenClaw agent (research + email) |
+| "Write a Python prime checker" | General agent (coding) |
+| "Summarize today's tech news by email" | Work agent (research + email) |
 | "What time is it?" | Inline tool (`get_current_time`) |
 | "Goodbye" | Graceful session close |
 
@@ -126,22 +126,12 @@ The voice agent routes requests to the appropriate tool:
 | Google Search | native | Quick factual lookups — weather, news, sports, "who is X" |
 | `generate_image` | background | Any picture, image, card, or illustration request |
 | `generate_video` | background | Any video, animation, or movie clip request |
-| `ask_openclaw` | background | Complex tasks — coding, writing, research, email, file ops, anything else |
+| `ask_work_agent` | background | Productivity/business tasks — email, calendar, scheduling, social posting |
+| `ask_general_agent` | background | Technical/complex tasks — coding, research, browsing, file ops, investigations |
 | `get_current_time` | inline | Current date/time |
 | `end_session` | inline | User says goodbye |
 
-When unsure, the agent routes to OpenClaw.
-
-## Parallel Tasking
-
-The demo supports up to 10 concurrent OpenClaw tasks with full isolation. When you ask for multiple things at once (e.g., "check my calendar and draft a newsletter"), each task gets its own OpenClaw session — no cross-talk.
-
-Key behaviors:
-- **Session isolation** — Each task runs on its own OpenClaw session key, preventing context contamination between concurrent tasks.
-- **Follow-up detection** — Saying "confirm that reschedule" automatically routes to the correct in-progress task thread, without needing to specify which task you mean.
-- **Write serialization** — Two calendar writes are serialized to prevent conflicts, while a calendar read and an email send run in parallel.
-- **Queue notifications** — If all 10 slots are busy, you hear "All background agents are currently busy" and see a notification in the UI.
-- **Retry on empty response** — If OpenClaw returns an empty completion (a known issue with overlapping sessions), the task retries once automatically.
+When unsure, the agent defaults to `ask_general_agent`.
 
 ## Files
 
@@ -151,7 +141,6 @@ Key behaviors:
 | `web-client.ts` | Web client — browser UI for mic capture, audio playback, transcription |
 | `lib/openclaw-client.ts` | WebSocket client for OpenClaw Gateway JSON-RPC protocol |
 | `lib/openclaw-tools.ts` | Tool definitions and subagent config for OpenClaw delegation |
-| `lib/openclaw-task-manager.ts` | Parallel task manager — semaphore, thread registry, write locks, domain inference |
 | `lib/openclaw-device-identity.ts` | Ed25519 device identity — keygen, persistence, challenge signing |
 
 ## Environment Variables

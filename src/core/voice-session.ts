@@ -4,18 +4,26 @@ import type { LanguageModelV1 } from 'ai';
 import { resolveInstructions } from '../agent/agent-context.js';
 import { AgentRouter } from '../agent/agent-router.js';
 import type { SubagentMessage } from '../agent/subagent-session.js';
+import { resamplePcm } from '../audio/resample.js';
 import { BehaviorManager } from '../behaviors/behavior-manager.js';
 import { MemoryDistiller } from '../memory/memory-distiller.js';
 import { ToolExecutor } from '../tools/tool-executor.js';
+import { ClientSenderAdapter } from '../transport/client-sender-adapter.js';
 import { ClientTransport } from '../transport/client-transport.js';
 import { GeminiLiveTransport } from '../transport/gemini-live-transport.js';
 import type { MainAgent, SubagentConfig } from '../types/agent.js';
 import type { BehaviorCategory } from '../types/behavior.js';
+import type { ConversationHistoryStore } from '../types/history.js';
 import type { FrameworkHooks } from '../types/hooks.js';
 import type { MemoryStore } from '../types/memory.js';
+import type { IClientChannel } from '../types/session-client.js';
+import type { SessionClientSender } from '../types/session-client.js';
 import type { LLMTransport, LLMTransportError, STTProvider } from '../types/transport.js';
+import type { TTSAudioConfig, TTSProvider } from '../types/tts.js';
+import type { ArtifactRef, ArtifactStore, SaveArtifactParams } from '../types/workspace.js';
 import { BackgroundNotificationQueue } from './background-notification-queue.js';
 import { ConversationContext } from './conversation-context.js';
+import { ConversationHistoryWriter } from './conversation-history-writer.js';
 import { DirectiveManager } from './directive-manager.js';
 import { EventBus } from './event-bus.js';
 import { HooksManager } from './hooks.js';
@@ -43,10 +51,17 @@ export interface VoiceSessionConfig {
 	subagentConfigs?: Record<string, SubagentConfig>;
 	/** Lifecycle hooks for observability. */
 	hooks?: FrameworkHooks;
-	/** Port for the client WebSocket server. */
-	port: number;
-	/** Host for the client WebSocket server (default: '0.0.0.0' for all interfaces). */
+	/**
+	 * Sender for all output to the client. The server owns the socket and feeds input
+	 * via feedAudioFromClient / feedJsonFromClient and notifyClientConnected / notifyClientDisconnected.
+	 */
+	clientSender?: SessionClientSender;
+	/** Port for the local client WebSocket server (legacy/local mode). */
+	port?: number;
+	/** Host for the local client WebSocket server (legacy/local mode). */
 	host?: string;
+	/** Listen timeout for local client WebSocket server startup (legacy/local mode). */
+	listenTimeoutMs?: number;
 	/** LLM model name (e.g. "gemini-live-2.5-flash-preview"). */
 	geminiModel?: string;
 	/** Vercel AI SDK model for subagent text generation. */
@@ -72,8 +87,27 @@ export interface VoiceSessionConfig {
 		/** Extract every N turns (default: 5). */
 		turnFrequency?: number;
 	};
+	/** When provided, conversation items are persisted at turn boundaries and on session close. */
+	conversationHistoryStore?: ConversationHistoryStore;
+	/** When provided, agents/tools can persist artifacts (images, docs, etc.) via session.workspace.saveArtifact(). */
+	artifactStore?: ArtifactStore;
+	/** External TTS provider for speech synthesis.
+	 *  When set, LLM is configured for text-mode responses.
+	 *  When omitted, LLM-native audio generation is used (default). */
+	ttsProvider?: TTSProvider;
 	/** Pre-constructed LLM transport. If provided, apiKey/geminiModel/speechConfig/compressionConfig are ignored. */
 	transport?: LLMTransport;
+	/** Optional per-session artifact registry for cross-tool binary sharing (images, documents). */
+	artifactRegistry?: {
+		store(
+			base64: string,
+			mimeType: string,
+			description: string,
+			source?: string,
+			fileName?: string,
+		): string;
+		dispose(): void;
+	};
 }
 
 /**
@@ -106,10 +140,10 @@ export class VoiceSession {
 	readonly conversationContext: ConversationContext;
 	readonly hooks: HooksManager;
 	private transport: LLMTransport;
-	private clientTransport: ClientTransport;
+	private clientTransport: IClientChannel;
 	private agentRouter: AgentRouter;
 	private toolExecutor: ToolExecutor;
-	private toolCallRouter!: ToolCallRouter;
+	private toolCallRouter?: ToolCallRouter;
 	private subagentConfigs: Record<string, SubagentConfig>;
 	private behaviorManager?: BehaviorManager;
 	private memoryDistiller?: MemoryDistiller;
@@ -118,6 +152,21 @@ export class VoiceSession {
 	private turnFirstAudioAt: number | null = null;
 	private sttProvider?: STTProvider;
 	private _commitFiredForTurn = false;
+	/** True when the current turn was interrupted — skips Gemini transcript correction. */
+	private _turnWasInterrupted = false;
+	// --- TTS state ---
+	private ttsProvider?: TTSProvider;
+	private _ttsCurrentRequestId = 0;
+	private _ttsTurnHasText = false;
+	private _ttsLlmTextDone = false;
+	private _ttsAudioDone = false;
+	private _ttsSpeaking = false;
+	private _ttsFormat?: TTSAudioConfig;
+	private _ttsIdleTimer?: ReturnType<typeof setTimeout>;
+	private _ttsHardTimer?: ReturnType<typeof setTimeout>;
+	private _ttsFirstTextMs = 0;
+	private _ttsFirstAudioMs = 0;
+	private _ttsTextLength = 0;
 	private config: VoiceSessionConfig;
 	private directiveManager = new DirectiveManager();
 	private transcriptManager!: TranscriptManager;
@@ -135,6 +184,13 @@ export class VoiceSession {
 	}
 	private notificationQueue!: BackgroundNotificationQueue;
 	private interactionMode = new InteractionModeManager();
+	/** Tracks consecutive reconnect attempts to prevent infinite reconnect storms. */
+	private reconnectAttempts = 0;
+	private static readonly MAX_RECONNECT_ATTEMPTS = 3;
+	private static readonly RECONNECT_BACKOFF_MS = [1000, 2000, 4000];
+	/** Resolves when memory/directives are loaded; used so greeting is sent after load without blocking connect. */
+	private _memoryReadyPromise: Promise<void> = Promise.resolve();
+	private externalAudioHandler: ((data: Buffer) => void) | null = null;
 
 	constructor(config: VoiceSessionConfig) {
 		this.config = config;
@@ -233,6 +289,18 @@ export class VoiceSession {
 			this.log(`Memory distillation enabled (every ${freq} turns)`);
 		}
 
+		// Persist conversation history when store is provided (writer subscribes to EventBus; disposes on session.close)
+		if (config.conversationHistoryStore) {
+			new ConversationHistoryWriter(
+				config.sessionId,
+				config.userId,
+				config.initialAgent,
+				this.eventBus,
+				this.conversationContext,
+				config.conversationHistoryStore,
+			);
+		}
+
 		// Set up LLM transport
 		const initialAgent = config.agents.find((a) => a.name === config.initialAgent);
 		const instructions = initialAgent ? resolveInstructions(initialAgent) : '';
@@ -240,16 +308,15 @@ export class VoiceSession {
 		const allInitialTools = [...(initialAgent?.tools ?? []), ...behaviorTools];
 
 		// Determine inputAudioTranscription setting:
-		// When sttProvider is set, disable built-in transcription automatically.
-		const inputTranscription = config.sttProvider ? false : config.inputAudioTranscription;
+		// Keep Gemini's built-in transcription enabled even when an external STT
+		// provider is active — the built-in result is used as a post-hoc correction
+		// for the STT transcript (more accurate language detection, better accuracy).
+		const inputTranscription = config.inputAudioTranscription;
 
 		if (config.transport) {
 			// Use pre-constructed transport (OpenAI, mock, etc.)
 			this.transport = config.transport;
 			// Sync tools and instructions so they're available at connect time.
-			// When an external STT provider is active, also disable transport built-in
-			// transcription at the provider level (not just the callback) to avoid
-			// duplicate backend processing and unnecessary cost.
 			this.transport.updateSession({
 				instructions,
 				tools: allInitialTools.length ? allInitialTools : undefined,
@@ -276,8 +343,8 @@ export class VoiceSession {
 
 		// Wire LLMTransport property callbacks — works for both injected and default transports
 		this.transport.onAudioOutput = (data) => this.handleAudioOutput(data);
-		this.transport.onToolCall = (calls) => this.toolCallRouter.handleToolCalls(calls);
-		this.transport.onToolCallCancel = (ids) => this.toolCallRouter.handleToolCallCancellation(ids);
+		this.transport.onToolCall = (calls) => this.toolCallRouter?.handleToolCalls(calls);
+		this.transport.onToolCallCancel = (ids) => this.toolCallRouter?.handleToolCallCancellation(ids);
 		this.transport.onTurnComplete = () => this.handleTurnComplete();
 		this.transport.onInterrupted = () => this.handleInterrupted();
 		this.transport.onOutputTranscription = (text) => this.transcriptManager.handleOutput(text);
@@ -289,7 +356,8 @@ export class VoiceSession {
 			this.handleResumptionUpdate(handle, resumable);
 		this.transport.onGroundingMetadata = (metadata) => this.handleGroundingMetadata(metadata);
 
-		// Wire STT: exactly one transcript path is active per session.
+		// Wire STT: streaming provider for real-time display, Gemini built-in for
+		// post-hoc correction. Both paths can be active simultaneously.
 		if (config.sttProvider) {
 			this.sttProvider = config.sttProvider;
 
@@ -314,8 +382,13 @@ export class VoiceSession {
 				this.transcriptManager.handleInputPartial(text);
 			};
 
-			// Disable transport built-in input transcription
-			this.transport.onInputTranscription = undefined;
+			// Wire Gemini built-in transcription as authoritative correction.
+			// Skipped on interrupted turns — Gemini may miss audio spoken during
+			// model output, producing incomplete transcripts.
+			this.transport.onInputTranscription = (text) => {
+				if (this._turnWasInterrupted) return;
+				this.transcriptManager.correctInput(text);
+			};
 		} else {
 			// No external STT — use transport built-in transcription
 			this.transport.onInputTranscription = (text) => this.transcriptManager.handleInput(text);
@@ -329,17 +402,29 @@ export class VoiceSession {
 			}
 		};
 
-		// Set up client transport
-		this.clientTransport = new ClientTransport(
-			config.port,
-			{
-				onAudioFromClient: (data) => this.handleAudioFromClient(data),
-				onJsonFromClient: (message) => this.handleJsonFromClient(message),
-				onClientConnected: () => this.handleClientConnected(),
-				onClientDisconnected: () => this.handleClientDisconnected(),
-			},
-			config.host ?? '0.0.0.0',
-		);
+		// Wire TTS provider
+		if (config.ttsProvider) {
+			this.ttsProvider = config.ttsProvider;
+			this.wireTtsProvider();
+		}
+
+		if (config.clientSender) {
+			// Server-owned socket mode (multi-user/session router).
+			this.clientTransport = new ClientSenderAdapter(config.clientSender);
+		} else {
+			// Backward-compatible local mode used by demos/tests.
+			this.clientTransport = new ClientTransport(
+				config.port ?? 9900,
+				{
+					onAudioFromClient: (data) => this.handleAudioFromClient(data),
+					onJsonFromClient: (message) => this.handleJsonFromClient(message),
+					onClientConnected: () => this.handleClientConnected(),
+					onClientDisconnected: () => this.handleClientDisconnected(),
+				},
+				config.host ?? '0.0.0.0',
+				config.listenTimeoutMs ?? 10_000,
+			);
+		}
 
 		// Forward GUI events from EventBus to the client as JSON text frames
 		this.eventBus.subscribe('gui.update', (payload) => {
@@ -350,6 +435,15 @@ export class VoiceSession {
 		});
 		this.eventBus.subscribe('subagent.ui.send', (payload) => {
 			this.clientTransport.sendJsonToClient({ type: 'ui.payload', payload: payload.payload });
+		});
+
+		// Bind STT lifecycle to session state: start when ACTIVE (agent ready), stop when disconnecting
+		this.eventBus.subscribe('session.stateChange', (payload: { toState: string }) => {
+			if (payload.toState === 'ACTIVE') {
+				this.startSttProvider();
+			} else if (payload.toState === 'RECONNECTING' || payload.toState === 'TRANSFERRING') {
+				void this.sttProvider?.stop();
+			}
 		});
 
 		// Route UI button responses back to the waiting SubagentSession
@@ -370,6 +464,17 @@ export class VoiceSession {
 				session.trySendToSubagent(answerText);
 			},
 		);
+
+		// Subscribe to async agent transfer requests (from external audio agents like Twilio)
+		this.eventBus.subscribe('agent.transfer_requested', (payload) => {
+			setImmediate(() => {
+				this.agentRouter.transfer(payload.toAgent).catch((err) => {
+					this.log(
+						`Transfer requested to "${payload.toAgent}" failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				});
+			});
+		});
 
 		// Set up tool executor
 		this.toolExecutor = this.createToolExecutor(config.initialAgent);
@@ -393,9 +498,30 @@ export class VoiceSession {
 				onMessage: (toolCallId, msg) => this.handleSubagentMessage(toolCallId, msg),
 				onSessionEnd: (toolCallId) => this.interactionMode.deactivate(toolCallId),
 			},
+			{
+				setExternalAudioHandler: (handler) => {
+					this.externalAudioHandler = handler;
+				},
+				sendAudioToClient: (data) => {
+					this.clientTransport.sendAudioToClient(data);
+				},
+			},
 		);
 		this.agentRouter.registerAgents(config.agents);
 		this.agentRouter.setInitialAgent(config.initialAgent);
+		if (this.ttsProvider) {
+			this.agentRouter.responseModality = 'text';
+		}
+
+		this.transport.onRealtimeLLMUsage = (usage) => {
+			if (this.hooks.onRealtimeLLMUsage) {
+				this.hooks.onRealtimeLLMUsage({
+					sessionId: this.config.sessionId,
+					agentName: this.agentRouter.activeAgent.name,
+					usage,
+				});
+			}
+		};
 
 		// Set up tool call router
 		this.toolCallRouter = new ToolCallRouter({
@@ -430,10 +556,41 @@ export class VoiceSession {
 
 	/** Start the client WebSocket server and connect to the LLM transport. */
 	async start(): Promise<void> {
+		// Validate TTS config
+		if (this.ttsProvider) {
+			if (!this.transport.capabilities.textResponseModality) {
+				throw new Error(
+					'TTSProvider requires text-mode responses, but the transport does not support textResponseModality',
+				);
+			}
+		}
 		await this.sttProvider?.start();
-		await this.memoryCacheManager?.refresh();
+		await this.ttsProvider?.start();
 
-		// Restore behavior presets from structured directives (deterministic lookup)
+		// Load memory and directives in parallel with Gemini connect so session starts fast
+		this._memoryReadyPromise = this.loadMemoryAndDirectives();
+
+		await this.clientTransport.start();
+		this.log('Connecting to LLM transport...');
+		this.sessionManager.transitionTo('CONNECTING');
+		if (this.config.transport) {
+			if (this.ttsProvider) {
+				this.transport.updateSession({ responseModality: 'text' });
+			}
+			await this.transport.connect();
+		} else {
+			await this.transport.connect({
+				auth: { type: 'api_key', apiKey: this.config.apiKey },
+				model: this.config.geminiModel ?? 'gemini-live-2.5-flash-preview',
+				...(this.ttsProvider ? { responseModality: 'text' as const } : {}),
+			});
+		}
+		this.log('LLM transport connected and setup complete');
+	}
+
+	/** Load memory cache and restore behavior directives; used in parallel with connect(). */
+	private async loadMemoryAndDirectives(): Promise<void> {
+		await this.memoryCacheManager?.refresh();
 		if (this.config.memory && this.behaviorManager) {
 			try {
 				const directives = await this.config.memory.store.getDirectives(this.config.userId);
@@ -450,30 +607,33 @@ export class VoiceSession {
 				// Best-effort — directive loading failure is non-fatal
 			}
 		}
+	}
 
-		this.log('Starting WS server...');
-		await this.clientTransport.start();
-		this.log('WS server ready. Connecting to LLM transport...');
-		this.sessionManager.transitionTo('CONNECTING');
-		if (this.config.transport) {
-			// Pre-constructed transport — already configured, just connect
-			await this.transport.connect();
-		} else {
-			// Default Gemini transport — pass config for backward compatibility
-			await this.transport.connect({
-				auth: { type: 'api_key', apiKey: this.config.apiKey },
-				model: this.config.geminiModel ?? 'gemini-live-2.5-flash-preview',
-			});
-		}
-		this.log('LLM transport connected and setup complete');
+	/**
+	 * Workspace API for persisting artifacts (images, videos, docs, etc.) produced by agents/tools.
+	 * When no artifactStore is configured, saveArtifact returns null without persisting.
+	 */
+	get workspace(): {
+		saveArtifact(params: SaveArtifactParams): Promise<ArtifactRef | null>;
+	} {
+		const sessionId = this.config.sessionId;
+		const userId = this.config.userId;
+		const store = this.config.artifactStore;
+		return {
+			async saveArtifact(params: SaveArtifactParams): Promise<ArtifactRef | null> {
+				if (!store) return null;
+				const full: SaveArtifactParams = {
+					...params,
+					sessionId: params.sessionId ?? sessionId,
+					userId: params.userId ?? userId,
+				};
+				return store.saveArtifact(full);
+			},
+		};
 	}
 
 	/** Gracefully shut down: disconnect Gemini, stop the WebSocket server, transition to CLOSED. */
 	async close(_reason = 'normal'): Promise<void> {
-		this.log(
-			`close() called (reason=${_reason}, state=${this.sessionManager.state}, stack=${new Error().stack?.split('\n')[2]?.trim()})`,
-		);
-
 		// Drop any queued background notifications — session is ending
 		this.notificationQueue.clear();
 
@@ -500,6 +660,9 @@ export class VoiceSession {
 		}
 
 		await this.sttProvider?.stop();
+		this.ttsClearTimers();
+		await this.ttsProvider?.stop();
+		this.config.artifactRegistry?.dispose();
 		await this.transport.disconnect();
 		await this.clientTransport.stop();
 
@@ -521,13 +684,14 @@ export class VoiceSession {
 		this.toolExecutor = this.createToolExecutor(agent.name);
 		const behaviorTools = this.behaviorManager?.tools ?? [];
 		this.toolExecutor.register([...agent.tools, ...behaviorTools]);
-		this.toolCallRouter.toolExecutor = this.toolExecutor;
-
+		if (this.toolCallRouter) {
+			this.toolCallRouter.toolExecutor = this.toolExecutor;
+		}
 		// Clear agent-scoped directives on transfer; session-scoped directives persist
 		this.directiveManager.clearAgent();
 
 		// Send the new agent's greeting if configured
-		if (this._clientConnected) {
+		if (this.clientConnected) {
 			this.sendGreeting();
 		}
 	}
@@ -543,10 +707,56 @@ export class VoiceSession {
 		);
 	}
 
+	private createAgentContext(agentName: string): import('../types/agent.js').AgentContext {
+		return {
+			sessionId: this.config.sessionId,
+			agentName,
+			injectSystemMessage: (text: string) =>
+				this.conversationContext.addAssistantMessage(`[system] ${text}`),
+			getRecentTurns: (count = 10) => [...this.conversationContext.items].slice(-count),
+			getMemoryFacts: () => this.memoryCacheManager?.facts ?? [],
+			requestTransfer: (toAgent: string) => {
+				setImmediate(() => {
+					this.eventBus.publish('agent.transfer_requested', {
+						sessionId: this.config.sessionId,
+						toAgent,
+					});
+				});
+			},
+			stopBufferingAndDrain: (handler: (chunk: Buffer) => void) => {
+				const buffered = this.clientTransport.stopBuffering();
+				for (const chunk of buffered) {
+					handler(chunk);
+				}
+			},
+			sendJsonToClient: (message: Record<string, unknown>) => {
+				this.clientTransport.sendJsonToClient(message);
+			},
+			sendAudioToClient: (data: Buffer) => {
+				this.clientTransport.sendAudioToClient(data);
+			},
+			setExternalAudioHandler: (handler: ((data: Buffer) => void) | null) => {
+				this.externalAudioHandler = handler;
+			},
+		};
+	}
+
 	// --- Audio fast-path (no EventBus) ---
 
 	private handleAudioFromClient(data: Buffer): void {
 		if (this.sessionManager.isActive) {
+			// When active agent uses external audio, don't forward to LLM transport.
+			// Route mic frames to the active external audio handler (e.g., TwilioBridge).
+			if (this.agentRouter.activeAgent.audioMode === 'external') {
+				if (this.externalAudioHandler) {
+					try {
+						this.externalAudioHandler(data);
+					} catch (err) {
+						this.reportError('external-audio', err instanceof Error ? err : new Error(String(err)));
+					}
+				}
+				return;
+			}
 			const base64 = data.toString('base64');
 			this.transport.sendAudio(base64);
 			this.sttProvider?.feedAudio(base64);
@@ -562,10 +772,173 @@ export class VoiceSession {
 		this.clientTransport.sendAudioToClient(buffer);
 	}
 
+	// --- TTS wiring ---
+
+	/** Wire TTSProvider callbacks and override transport callbacks for text mode. */
+	private wireTtsProvider(): void {
+		const tts = this.ttsProvider;
+		if (!tts) return;
+
+		// Configure TTS with preferred output format
+		const preferredFormat: TTSAudioConfig = {
+			sampleRate: this.transport.audioFormat.outputSampleRate,
+			bitDepth: 16,
+			channels: 1,
+			encoding: 'pcm',
+		};
+		this._ttsFormat = tts.configure(preferredFormat);
+
+		// Wire LLM text output → TTS provider + transcript
+		this.transport.onTextOutput = (text) => {
+			this.transcriptManager.handleOutput(text);
+			// Skip empty/whitespace-only chunks for TTS to avoid invalid transcript
+			// errors from providers that require meaningful initial text.
+			if (!text || text.trim().length === 0) {
+				return;
+			}
+
+			if (!this._ttsTurnHasText) {
+				this._ttsCurrentRequestId++;
+				this._ttsTurnHasText = true;
+				this._ttsFirstTextMs = Date.now();
+				this._ttsFirstAudioMs = 0;
+				this._ttsTextLength = 0;
+			}
+			this._ttsTextLength += text.length;
+			tts.synthesize(text, this._ttsCurrentRequestId);
+		};
+
+		// When LLM text stream ends — flush TTS buffer (does NOT mean end-of-request)
+		this.transport.onTextDone = () => {
+			if (this._ttsTurnHasText) {
+				tts.synthesize('', this._ttsCurrentRequestId, { flush: true });
+			}
+		};
+
+		// Wire TTS audio output → client (fast-path, with stale filtering + resampling)
+		tts.onAudio = (base64Pcm, _durationMs, requestId) => {
+			if (requestId !== this._ttsCurrentRequestId) return; // stale
+			let buffer: Buffer = Buffer.from(base64Pcm, 'base64');
+			if (
+				this._ttsFormat &&
+				this._ttsFormat.sampleRate !== this.transport.audioFormat.outputSampleRate
+			) {
+				buffer = resamplePcm(
+					buffer,
+					this._ttsFormat.sampleRate,
+					this.transport.audioFormat.outputSampleRate,
+					this._ttsFormat.bitDepth,
+				);
+			}
+			this.clientTransport.sendAudioToClient(buffer);
+			this.notificationQueue.markAudioReceived();
+			this._ttsSpeaking = true;
+			if (this._ttsFirstAudioMs === 0) {
+				this._ttsFirstAudioMs = Date.now();
+			}
+			// Reset idle watchdog on each audio chunk
+			this.ttsResetIdleTimer();
+		};
+
+		// Wire TTS done → turn gating + hook
+		tts.onDone = (requestId) => {
+			if (requestId !== this._ttsCurrentRequestId) return; // stale
+			this._ttsAudioDone = true;
+			this._ttsSpeaking = false;
+			this.ttsClearTimers();
+			// Fire TTS synthesis hook with timing metrics
+			if (this.hooks.onTTSSynthesis && this._ttsFirstTextMs > 0) {
+				const now = Date.now();
+				this.hooks.onTTSSynthesis({
+					sessionId: this.config.sessionId,
+					provider: tts.constructor.name,
+					textLength: this._ttsTextLength,
+					durationMs: now - this._ttsFirstTextMs,
+					audioMs: 0, // Would require tracking total audio duration
+					ttfbMs: this._ttsFirstAudioMs > 0 ? this._ttsFirstAudioMs - this._ttsFirstTextMs : 0,
+					requestId,
+				});
+			}
+			this.ttsMaybeCompleteTurn();
+		};
+
+		// Wire TTS errors
+		tts.onError = (error, fatal) => {
+			this.log(`TTS error (fatal=${fatal}): ${error.message}`);
+			if (this.hooks.onError) {
+				this.hooks.onError({
+					component: 'tts',
+					error,
+					severity: fatal ? 'fatal' : 'warn',
+				});
+			}
+			if (fatal) {
+				this.close('tts_fatal_error');
+			}
+		};
+
+		// Wire word boundaries to client
+		tts.onWordBoundary = (word, offsetMs, requestId) => {
+			if (requestId !== this._ttsCurrentRequestId) return;
+			this.clientTransport.sendJsonToClient({
+				type: 'word_boundary',
+				word,
+				offsetMs,
+				requestId,
+			});
+		};
+
+		// Wire speech-started for TTS barge-in (LLM idle but TTS still playing)
+		this.transport.onSpeechStarted = () => {
+			if (this._ttsSpeaking && this._ttsLlmTextDone) {
+				this.handleInterrupted();
+			}
+		};
+
+		// Disable native audio output and output transcription in TTS mode
+		this.transport.onAudioOutput = undefined;
+		this.transport.onOutputTranscription = undefined;
+	}
+
+	/** Turn gating: check if both LLM and TTS are done. */
+	private ttsMaybeCompleteTurn(): void {
+		if (this._ttsLlmTextDone && this._ttsAudioDone) {
+			this._ttsLlmTextDone = false;
+			this._ttsAudioDone = false;
+			this._ttsTurnHasText = false;
+			this.ttsClearTimers();
+			this.handleTurnCompleteInternal();
+		}
+	}
+
+	/** Reset the idle watchdog timer (called on each TTS audio chunk). */
+	private ttsResetIdleTimer(): void {
+		if (this._ttsIdleTimer) clearTimeout(this._ttsIdleTimer);
+		this._ttsIdleTimer = setTimeout(() => {
+			this.log('TTS idle watchdog fired — forcing turn completion');
+			this._ttsAudioDone = true;
+			this._ttsSpeaking = false;
+			this._ttsCurrentRequestId++; // Invalidate late-arriving chunks
+			this.ttsMaybeCompleteTurn();
+		}, 2000);
+	}
+
+	/** Clear all TTS timers. */
+	private ttsClearTimers(): void {
+		if (this._ttsIdleTimer) {
+			clearTimeout(this._ttsIdleTimer);
+			this._ttsIdleTimer = undefined;
+		}
+		if (this._ttsHardTimer) {
+			clearTimeout(this._ttsHardTimer);
+			this._ttsHardTimer = undefined;
+		}
+	}
+
 	// --- Gemini event handlers ---
 
 	private handleSetupComplete(_sessionId: string): void {
-		this.log(`Gemini setup complete (clientConnected=${this._clientConnected})`);
+		this.log(`Gemini setup complete (clientConnected=${this.clientConnected})`);
 		if (this.sessionManager.state === 'CONNECTING') {
 			this.sessionManager.transitionTo('ACTIVE');
 		}
@@ -580,12 +953,49 @@ export class VoiceSession {
 			this._skipNextGreeting = false;
 			return;
 		}
-		if (this._clientConnected) {
-			this.sendGreeting();
+		// Send greeting after memory/directives are loaded (no blocking of connect)
+		if (this.clientConnected) {
+			this._memoryReadyPromise.then(() => this.sendGreeting());
 		}
 	}
 
+	/** Start STT when session becomes ACTIVE (agent ready). Fire-and-forget. */
+	private startSttProvider(): void {
+		if (!this.sttProvider) return;
+		this.sttProvider.start().catch((err) => this.reportError('stt', err));
+	}
+
 	private handleTurnComplete(): void {
+		// A completed turn means the connection is healthy — reset reconnect counter
+		this.reconnectAttempts = 0;
+
+		// TTS turn gating: when TTS is active, defer turn completion until TTS finishes
+		if (this.ttsProvider) {
+			this._ttsLlmTextDone = true;
+			if (!this._ttsTurnHasText) {
+				// Tool-call-only turn — no text synthesized, TTS won't fire onDone
+				this._ttsAudioDone = true;
+			} else {
+				// Start hard cap timer (60s) to prevent stuck turns
+				if (!this._ttsHardTimer) {
+					this._ttsHardTimer = setTimeout(() => {
+						this.log('TTS hard cap timer fired — forcing turn completion');
+						this._ttsAudioDone = true;
+						this._ttsSpeaking = false;
+						this._ttsCurrentRequestId++; // Invalidate late-arriving chunks
+						this.ttsMaybeCompleteTurn();
+					}, 60000);
+				}
+			}
+			this.ttsMaybeCompleteTurn();
+			return; // Defer — actual turn-end runs via ttsMaybeCompleteTurn
+		}
+
+		this.handleTurnCompleteInternal();
+	}
+
+	/** Core turn-end logic — called directly (no TTS) or via ttsMaybeCompleteTurn (TTS gate). */
+	private handleTurnCompleteInternal(): void {
 		// ORDERING: STT commit + cleanup BEFORE turnId increment.
 		// This ensures commit(turnId) uses the turn being completed, and
 		// stale-drop (turnId < this.turnId) correctly rejects prior-turn results.
@@ -595,6 +1005,7 @@ export class VoiceSession {
 			}
 			this.sttProvider.handleTurnComplete();
 			this._commitFiredForTurn = false;
+			this._turnWasInterrupted = false;
 		}
 
 		this.transcriptManager.flush();
@@ -630,17 +1041,7 @@ export class VoiceSession {
 				.map((i) => `[${i.role}]: ${i.content}`)
 				.join('\n');
 
-			agent.onTurnCompleted(
-				{
-					sessionId: this.config.sessionId,
-					agentName: agent.name,
-					injectSystemMessage: (text) =>
-						this.conversationContext.addAssistantMessage(`[system] ${text}`),
-					getRecentTurns: (count = 10) => [...this.conversationContext.items].slice(-count),
-					getMemoryFacts: () => this.memoryCacheManager?.facts ?? [],
-				},
-				transcript,
-			);
+			agent.onTurnCompleted(this.createAgentContext(agent.name), transcript);
 		}
 
 		// Trigger memory extraction (every N turns) and refresh cache
@@ -690,7 +1091,18 @@ export class VoiceSession {
 
 	private handleInterrupted(): void {
 		this.log('Interrupted by user');
+		this._turnWasInterrupted = true;
 		this.sttProvider?.handleInterrupted();
+		// Cancel TTS and invalidate in-flight audio
+		if (this.ttsProvider) {
+			this.ttsProvider.cancel();
+			this._ttsSpeaking = false;
+			this._ttsLlmTextDone = false;
+			this._ttsAudioDone = false;
+			this._ttsTurnHasText = false;
+			this._ttsCurrentRequestId++;
+			this.ttsClearTimers();
+		}
 		this.notificationQueue.resetAudio();
 		this.notificationQueue.markInterrupted();
 		this.transcriptManager.flush();
@@ -812,6 +1224,26 @@ export class VoiceSession {
 
 		// Record in conversation context
 		this.conversationContext.addUserMessage(`[Uploaded file: ${fileName ?? 'file'}]`);
+
+		// Store in artifact registry for cross-tool access (supported binary image types only).
+		if (this.config.artifactRegistry && mimeType.startsWith('image/')) {
+			try {
+				this.config.artifactRegistry.store(
+					base64,
+					mimeType,
+					fileName ?? `upload_${Date.now()}`,
+					'uploaded',
+					fileName,
+				);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				this.log(`Failed to store artifact: ${msg}`);
+				this.eventBus.publish('gui.notification', {
+					sessionId: this.config.sessionId,
+					message: `File uploaded to voice session but cannot be forwarded to agents: ${msg}`,
+				});
+			}
+		}
 	}
 
 	private handleTextInput(text: string): void {
@@ -836,10 +1268,8 @@ export class VoiceSession {
 	}
 
 	private handleClientConnected(): void {
-		this.log(
-			`Client connected (geminiActive=${this.sessionManager.isActive}, state=${this.sessionManager.state})`,
-		);
-		this._clientConnected = true;
+		this.log(`Client connected (geminiActive=${this.sessionManager.isActive})`);
+		this.clientConnected = true;
 
 		// Send audio format config so the client can negotiate correct sample rates
 		this.clientTransport.sendJsonToClient({
@@ -850,7 +1280,7 @@ export class VoiceSession {
 		this.behaviorManager?.sendCatalog();
 		if (this.sessionManager.isActive) {
 			if (this.turnId === 0) {
-				this.sendGreeting();
+				this._memoryReadyPromise.then(() => this.sendGreeting());
 			} else {
 				// Client reconnected mid-session — replay context summary silently
 				const items = this.conversationContext.items;
@@ -934,7 +1364,32 @@ export class VoiceSession {
 
 	private handleClientDisconnected(): void {
 		this.log('Client disconnected');
-		this._clientConnected = false;
+		this.clientConnected = false;
+	}
+
+	/** Feed client audio into the session (LLM + STT). Used when the server owns the socket (multi-user). */
+	feedAudioFromClient(data: Buffer): void {
+		this.handleAudioFromClient(data);
+	}
+
+	/** Feed client JSON (text_input, file_upload, etc.) into the session. Used when the server owns the socket. */
+	feedJsonFromClient(message: Record<string, unknown>): void {
+		this.handleJsonFromClient(message);
+	}
+
+	/** Notify the session that the client connected. Used when the server owns the socket (multi-user). */
+	notifyClientConnected(): void {
+		this.handleClientConnected();
+	}
+
+	/** Notify the session that the client disconnected. Used when the server owns the socket (multi-user). */
+	notifyClientDisconnected(): void {
+		this.handleClientDisconnected();
+	}
+
+	/** Session ID for logging and multi-user association. */
+	getSessionId(): string {
+		return this.config.sessionId;
 	}
 
 	// --- Error handling ---
@@ -951,6 +1406,9 @@ export class VoiceSession {
 		if (this.sessionManager.state === 'ACTIVE') {
 			// Go to CLOSED — the client-reconnect path in handleClientConnected()
 			// will do a fresh connect (no history replay) when a client connects.
+			// Note: fork's PR #7 design preserves passive client-driven reconnect;
+			// upstream's auto-reconnect-with-backoff alternative was dropped on
+			// merge per Lucy's per-PR analysis (KEEP PR #7).
 			this.log('Gemini disconnected — will reconnect fresh when client connects');
 			this.sessionManager.transitionTo('CLOSED');
 			return;

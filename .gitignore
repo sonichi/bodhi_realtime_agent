@@ -1,24 +1,29 @@
-# Dependencies
 node_modules/
-
-# Build output (kept in repo for GitHub dependency installs)
-# dist/
+.pnpm-store/
+pnpm-store/
+dist/
 *.tsbuildinfo
-
-# Environment variables
 .env
 .env.*
 !.env.example
-
-# Test coverage
 coverage/
-
-# Logs
 *.log
-
-# OS files
 .DS_Store
-Thumbs.db
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+docs/.vitepress/.temp/
+/memory/
+/history/
+/workspaces/
+# Optional local pnpm config (e.g. store-dir); do not commit
+.npmrc
+/.worktrees/
+.massgen/
+# Local fixtures/data should never be committed in SDK branch
+/fixtures/
+/user-agents/
+ngrok.yml
+dev_docs/
 
 # IDE / Editor
 .idea/
@@ -26,15 +31,7 @@ Thumbs.db
 *.swp
 *.swo
 *~
-
 # Claude Code
 .claude/
 CLAUDE.md
-
-# Documentation build
-docs/.vitepress/cache/
-docs/.vitepress/dist/
-docs/api/
-
-# Internal dev docs
-dev_docs/
+AGENTS.md

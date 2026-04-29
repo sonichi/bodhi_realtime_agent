@@ -1,45 +1,30 @@
 # Introduction
 
-Bodhi Realtime Agent Framework is a TypeScript framework for building **real-time voice agent applications**. It supports multiple LLM providers through a unified `LLMTransport` interface — currently [Google Gemini Live API](https://ai.google.dev/gemini-api/docs/live) and [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime). It handles the hard parts of voice AI — bidirectional audio streaming, turn detection, agent transfers, tool execution, and session management — so you can focus on what your agent actually does.
+Bodhi Realtime Agent Framework is a TypeScript framework for real-time voice agents with:
 
-## What You Can Build
+- Gemini Live and OpenAI Realtime transports
+- multi-agent routing and transfers
+- inline/background tools
+- background and interactive subagents
+- pluggable STT and TTS providers
+- multimodal JSON, file, image, and artifact flows
+- Twilio telephony bridges for outbound human transfer and inbound calls
+- multi-user session management, memory, hooks, and observability
 
-- **Voice assistants with tools** — An agent that answers questions, checks the weather, does math, and searches the web, all through natural conversation.
-- **Multi-agent systems** — A general assistant that transfers to a booking specialist, a math expert, or a language tutor mid-conversation.
-- **Multimodal applications** — Users can speak, type, upload images, and receive generated images — all on a single WebSocket connection.
-- **Proactive notification agents** — Service subagents that monitor calendars, inboxes, or IoT devices and notify the user when something needs attention.
+## What Changed In This Branch
 
-## Architecture Overview
+The current branch expands the framework from a local single-session voice demo into a broader realtime runtime:
 
-```
-Client App  <──WebSocket──>  ClientTransport  <──audio──>  LLMTransport  <──WebSocket──>  LLM Provider
-                                    │                           │            (Gemini / OpenAI)
-                                    └───────── VoiceSession ────┘
-                                    │    (audio fast-path relay) │
-                                    │                           │
-                              AgentRouter    ToolExecutor    ConversationContext
-```
+- **Provider coverage:** `GeminiLiveTransport` and `OpenAIRealtimeTransport` share the same `LLMTransport` contract, including text-mode response support for external TTS.
+- **Speech providers:** `CartesiaTTSProvider`, `ElevenLabsTTSProvider`, `GeminiBatchSTTProvider`, and `ElevenLabsSTTProvider` can be attached at the `VoiceSession` level.
+- **Telephony:** `TwilioBridge`, `TwilioWebhookServer`, and audio-codec helpers bridge framework PCM audio with Twilio Media Streams.
+- **Production server primitives:** `MultiClientTransport`, `MultiUserSessionManager`, and `loadConfig()` support multi-user deployments.
+- **Examples:** the `examples/` directory now includes Gemini, OpenAI, Cartesia TTS, Twilio, OpenClaw, and browser clients.
 
-Audio flows on a **fast-path** directly between the client and LLM transports, bypassing the EventBus for minimal latency. Everything else (tool calls, agent transfers, GUI events) goes through the control plane. The `LLMTransport` interface abstracts provider differences — your agent code is the same regardless of which LLM provider you use.
+## Read Next
 
-## Key Concepts
-
-| Concept | What it does |
-|---------|-------------|
-| [VoiceSession](/guide/voice-session) | Top-level orchestrator that wires all components together |
-| [Agents](/guide/agents) | Personas with distinct instructions, tools, and lifecycle hooks |
-| [Tools](/guide/tools) | Functions the AI model can call during conversation (inline or background) |
-| [Memory](/guide/memory) | Automatic extraction of durable user facts across sessions |
-| [Events & Hooks](/guide/events) | Type-safe EventBus and lifecycle callbacks for observability |
-| [Transport](/guide/transport) | Provider-agnostic LLM transport and client WebSocket connections |
-
-## Prerequisites
-
-- **Node.js 22+** — The framework uses modern JavaScript features
-- **pnpm** — Package manager ([install guide](https://pnpm.io/installation))
-- **LLM API key** — A Google API key ([get one](https://aistudio.google.com/)) for Gemini Live, or an OpenAI API key for OpenAI Realtime
-
-## Next Steps
-
-- [Quick Start](/guide/quickstart) — Build a working voice agent in 5 minutes
-- [Running Examples](/guide/running-examples) — Try the built-in demo with tools, transfers, and image generation
+- [Quick Start](/guide/quickstart)
+- [Running Examples](/guide/running-examples)
+- [Transport](/guide/transport)
+- [External TTS](/advanced/tts)
+- [Telephony](/advanced/telephony)

@@ -35,8 +35,14 @@ export class HooksManager {
 	get onSubagentStep() {
 		return this.hooks.onSubagentStep;
 	}
+	get onRealtimeLLMUsage() {
+		return this.hooks.onRealtimeLLMUsage;
+	}
 	get onMemoryExtraction() {
 		return this.hooks.onMemoryExtraction;
+	}
+	get onTTSSynthesis() {
+		return this.hooks.onTTSSynthesis;
 	}
 	get onError() {
 		return this.hooks.onError;

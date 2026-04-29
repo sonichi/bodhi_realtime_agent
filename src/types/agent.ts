@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+import type { LanguageModelV1 } from 'ai';
 import type { ConversationItem } from './conversation.js';
 import type { MemoryFact } from './memory.js';
 import type { ToolDefinition } from './tool.js';
@@ -19,6 +20,17 @@ export interface AgentContext {
 	getRecentTurns(count?: number): ConversationItem[];
 	/** Retrieve all memory facts currently stored for this user. */
 	getMemoryFacts(): MemoryFact[];
+	/** Request an asynchronous transfer to another agent (fires on next tick to avoid re-entrancy). */
+	requestTransfer(toAgent: string): void;
+	/** Stop buffering client audio and drain buffered chunks through the handler.
+	 *  Used by external audio agents (e.g., Twilio) to flush audio accumulated during the dial gap. */
+	stopBufferingAndDrain(handler: (chunk: Buffer) => void): void;
+	/** Send a JSON message to the connected client. */
+	sendJsonToClient(message: Record<string, unknown>): void;
+	/** Send raw PCM audio to the connected client as a binary frame. */
+	sendAudioToClient?(data: Buffer): void;
+	/** Register/unregister an external audio handler for client mic frames. */
+	setExternalAudioHandler?(handler: ((data: Buffer) => void) | null): void;
 }
 
 /**
@@ -40,6 +52,8 @@ export interface MainAgent {
 	providerOptions?: Record<string, unknown>;
 	/** IETF BCP 47 language tag for this agent (e.g., 'zh-CN', 'es-ES', 'ja-JP'). When set, a language directive is prepended to the system instruction. */
 	language?: string;
+	/** Audio routing mode. 'llm' (default): audio flows through LLM transport. 'external': agent manages its own audio path (e.g., Twilio phone bridge). When 'external', LLM transport is disconnected during this agent's turn. */
+	audioMode?: 'llm' | 'external';
 	/** Called when this agent becomes the active agent (after a transfer or initial start). */
 	onEnter?(ctx: AgentContext): Promise<void>;
 	/** Called when this agent is being replaced by another agent. */
@@ -66,8 +80,11 @@ export interface SubagentConfig {
 	maxSteps?: number;
 	/** Timeout in milliseconds for the entire subagent run. */
 	timeout?: number;
-	/** Override the model used for this subagent (defaults to session model). */
-	model?: string;
+	/**
+	 * Optional Vercel AI SDK text model for this subagent’s `generateText` relay.
+	 * When omitted, the session default (`VoiceSessionConfig.model`) is used.
+	 */
+	reasoningModel?: LanguageModelV1;
 	/** When true, a SubagentSession with user interaction capabilities is created. */
 	interactive?: boolean;
 	/**

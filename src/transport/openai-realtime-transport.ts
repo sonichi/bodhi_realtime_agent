@@ -13,6 +13,7 @@ import type {
 	LLMTransport,
 	LLMTransportConfig,
 	LLMTransportError,
+	RealtimeLLMUsageEvent,
 	ReconnectState,
 	ReplayItem,
 	SessionUpdate,
@@ -20,6 +21,13 @@ import type {
 	TransportToolCall,
 	TransportToolResult,
 } from '../types/transport.js';
+import { OpenAIFunctionCallAssembler } from './openai-function-call-assembler.js';
+import { OpenAIResponseStateTracker } from './openai-response-state.js';
+import { OpenAISessionSerializer } from './openai-session-serializer.js';
+import {
+	normalizeOpenAIResponseUsage,
+	normalizeOpenAITranscriptionUsage,
+} from './realtime-usage-normalize.js';
 import { zodToJsonSchema } from './zod-to-schema.js';
 
 /** Configuration for constructing an OpenAIRealtimeTransport. */
@@ -70,6 +78,7 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 		sessionResumption: false,
 		contextCompression: false,
 		groundingMetadata: false,
+		textResponseModality: true,
 	};
 
 	readonly audioFormat: AudioFormatSpec = {
@@ -95,6 +104,10 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 	onGoAway?: (timeLeft: string) => void;
 	onResumptionUpdate?: (handle: string, resumable: boolean) => void;
 	onGroundingMetadata?: (metadata: Record<string, unknown>) => void;
+	onTextOutput?: (text: string) => void;
+	onTextDone?: () => void;
+	onSpeechStarted?: () => void;
+	onRealtimeLLMUsage?: (usage: RealtimeLLMUsageEvent) => void;
 
 	// --- Private state ---
 	private client: OpenAI;
@@ -112,11 +125,15 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 	private audioOutputMs = 0;
 
 	// Tool call argument accumulation (OpenAI streams args incrementally)
-	private pendingFunctionCalls = new Map<string, string>();
+	private functionCallAssembler = new OpenAIFunctionCallAssembler();
 
 	// when_idle scheduling: buffer tool results while model is generating
-	private _isModelGenerating = false;
+	private responseState = new OpenAIResponseStateTracker();
 	private _pendingWhenIdle: TransportToolResult[] = [];
+	private sessionSerializer = new OpenAISessionSerializer();
+
+	// Text mode: whether the transport is configured for text-mode responses (for TTS)
+	private _textMode = false;
 
 	// Audio suppression: stop forwarding audio deltas after interruption
 	private _suppressAudio = false;
@@ -184,9 +201,10 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 
 	async disconnect(): Promise<void> {
 		this._isConnected = false;
-		this.pendingFunctionCalls.clear();
+		this.functionCallAssembler.clear();
 		this._pendingWhenIdle = [];
-		this._isModelGenerating = false;
+		this.responseState.reset();
+		this.sessionSerializer.reset();
 		this._suppressAudio = false;
 		this.lastAssistantItemId = null;
 		this.audioOutputMs = 0;
@@ -258,6 +276,9 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 		if (config.tools !== undefined) {
 			this.tools = config.tools;
 		}
+		if (config.responseModality !== undefined) {
+			this._textMode = config.responseModality === 'text';
+		}
 
 		if (!this.rt || !this._isConnected) return;
 
@@ -269,13 +290,16 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 			// biome-ignore lint/suspicious/noExplicitAny: SDK tools type is complex; our tool format is compatible at runtime
 			update.tools = config.tools.map(toolToOpenAIFunction) as any;
 		}
+		if (config.responseModality !== undefined) {
+			update.output_modalities = config.responseModality === 'text' ? ['text'] : ['audio'];
+		}
 
 		this.rtSend({ type: 'session.update', session: update as RealtimeSessionCreateRequest });
 	}
 
 	// --- Agent transfer (in-place via session.update — no reconnect needed) ---
 
-	async transferSession(config: SessionUpdate, _state?: ReconnectState): Promise<void> {
+	async transferSession(config: SessionUpdate, state?: ReconnectState): Promise<void> {
 		const update: Partial<RealtimeSessionCreateRequest> = {};
 
 		if (config.instructions !== undefined) {
@@ -287,8 +311,20 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 			// biome-ignore lint/suspicious/noExplicitAny: SDK tools type is complex; our tool format is compatible at runtime
 			update.tools = config.tools.map(toolToOpenAIFunction) as any;
 		}
+		if (config.responseModality !== undefined) {
+			this._textMode = config.responseModality === 'text';
+			update.output_modalities = config.responseModality === 'text' ? ['text'] : ['audio'];
+		}
 
-		if (!this.rt || !this._isConnected) return;
+		if (!this.rt || !this._isConnected) {
+			await this.connect();
+			if (state?.conversationHistory?.length) {
+				this.replayHistory(state.conversationHistory);
+			}
+			return;
+		}
+
+		await this.sessionSerializer.acquire('session.update');
 
 		// Wait for session.updated confirmation
 		const updatedPromise = new Promise<void>((resolve, reject) => {
@@ -299,8 +335,15 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 			});
 		});
 
-		this.rtSend({ type: 'session.update', session: update as RealtimeSessionCreateRequest });
-		await updatedPromise;
+		try {
+			this.rtSend({ type: 'session.update', session: update as RealtimeSessionCreateRequest });
+			await updatedPromise;
+			this.sessionSerializer.release();
+		} catch (error) {
+			const err = error instanceof Error ? error : new Error(String(error));
+			this.sessionSerializer.reject(err);
+			throw err;
+		}
 	}
 
 	// --- Content injection (greetings, directives, text input) ---
@@ -365,15 +408,16 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 		const scheduling = result.scheduling ?? 'immediate';
 
 		// 'when_idle': buffer if model is mid-response, flush on response.done
-		if (scheduling === 'when_idle' && this._isModelGenerating) {
+		if (scheduling === 'when_idle' && this.responseState.isGenerating) {
 			this._pendingWhenIdle.push(result);
 			return;
 		}
 
 		// 'interrupt': cancel in-flight response before delivering
-		if (scheduling === 'interrupt' && this._isModelGenerating) {
+		if (scheduling === 'interrupt' && this.responseState.isGenerating) {
+			this.responseState.requestCancel();
 			this.rt.send({ type: 'response.cancel' });
-			this._isModelGenerating = false;
+			this.responseState.cancelCompleted();
 		}
 
 		// Send the tool output as a conversation item
@@ -435,11 +479,15 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 		if (config.transcription !== undefined) {
 			this.config.transcriptionModel = config.transcription.input === false ? null : undefined;
 		}
+		if (config.responseModality !== undefined) {
+			this._textMode = config.responseModality === 'text';
+		}
 	}
 
 	private buildSessionConfig(): RealtimeSessionCreateRequest {
 		const session: RealtimeSessionCreateRequest = {
 			type: 'realtime',
+			output_modalities: this._textMode ? ['text'] : ['audio'],
 			audio: {
 				input: {
 					format: { type: 'audio/pcm', rate: 24000 },
@@ -462,10 +510,14 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 							{ noise_reduction: this.config.noiseReduction as any }
 						: {}),
 				},
-				output: {
-					format: { type: 'audio/pcm', rate: 24000 },
-					voice: this.voice,
-				},
+				...(!this._textMode
+					? {
+							output: {
+								format: { type: 'audio/pcm', rate: 24000 },
+								voice: this.voice,
+							},
+						}
+					: {}),
 			},
 		};
 
@@ -495,9 +547,22 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 			this.audioOutputMs += (samples / 24000) * 1000;
 		});
 
+		// --- Text output (text mode — for TTS) ---
+		// biome-ignore lint/suspicious/noExplicitAny: event name may not be in SDK types yet
+		(rt as any).on('response.output_text.delta', (event: any) => {
+			if (this.onTextOutput && event.delta) this.onTextOutput(event.delta);
+		});
+		// biome-ignore lint/suspicious/noExplicitAny: event name may not be in SDK types yet
+		(rt as any).on('response.output_text.done', () => {
+			if (this.onTextDone) this.onTextDone();
+		});
+
 		// --- Response lifecycle: track when a response is active ---
-		rt.on('response.created', () => {
-			this._isModelGenerating = true;
+		rt.on('response.created', (event: unknown) => {
+			const responseId =
+				((event as { response?: { id?: string } })?.response?.id as string | undefined) ??
+				'unknown';
+			this.responseState.responseCreated(responseId);
 			this._suppressAudio = false;
 			if (this.onModelTurnStart) this.onModelTurnStart();
 		});
@@ -514,8 +579,10 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 
 		// --- Tool call argument streaming (accumulate per item_id) ---
 		rt.on('response.function_call_arguments.delta', (event) => {
-			const buffer = this.pendingFunctionCalls.get(event.item_id) ?? '';
-			this.pendingFunctionCalls.set(event.item_id, buffer + event.delta);
+			if (!this.functionCallAssembler.hasPendingCall(event.item_id)) {
+				this.functionCallAssembler.startCall(event.item_id, '');
+			}
+			this.functionCallAssembler.appendDelta(event.item_id, event.delta);
 		});
 
 		// --- Tool call complete (fires onToolCall) ---
@@ -524,18 +591,29 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 			if (item.type === 'function_call') {
 				// Prefer accumulated buffer (built from streamed deltas).
 				// Fall back to item.arguments from the done event.
-				const rawArgs = (item.id && this.pendingFunctionCalls.get(item.id)) || item.arguments;
-				if (item.id) this.pendingFunctionCalls.delete(item.id);
-
 				let args: Record<string, unknown> = {};
-				if (rawArgs) {
+				const completed = item.id ? this.functionCallAssembler.finalize(item.id) : null;
+				if (completed) {
+					args = completed.args;
+					if (typeof args._raw === 'string') {
+						if (this.onError) {
+							this.onError({
+								error: new Error(
+									`Failed to parse tool call arguments for ${item.name}: ${args._raw}`,
+								),
+								recoverable: true,
+							});
+						}
+						return;
+					}
+				} else if (item.arguments) {
 					try {
-						args = JSON.parse(rawArgs);
+						args = JSON.parse(item.arguments);
 					} catch {
 						if (this.onError) {
 							this.onError({
 								error: new Error(
-									`Failed to parse tool call arguments for ${item.name}: ${rawArgs}`,
+									`Failed to parse tool call arguments for ${item.name}: ${item.arguments}`,
 								),
 								recoverable: true,
 							});
@@ -556,8 +634,12 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 		});
 
 		// --- Turn complete: clear generating state, flush when_idle queue ---
-		rt.on('response.done', () => {
-			this._isModelGenerating = false;
+		rt.on('response.done', (event: unknown) => {
+			const e = event as { response?: { id?: string; usage?: unknown } };
+			const normalized = normalizeOpenAIResponseUsage(e?.response?.usage, e?.response?.id);
+			if (normalized && this.onRealtimeLLMUsage) this.onRealtimeLLMUsage(normalized);
+
+			this.responseState.responseDone();
 			this.lastAssistantItemId = null;
 			this.audioOutputMs = 0;
 			this.flushPendingWhenIdle();
@@ -571,8 +653,12 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 		// Sending response.cancel here would race with the server's own cancellation
 		// and produce "no active response found" errors.
 		rt.on('input_audio_buffer.speech_started', () => {
-			if (!this._isModelGenerating) return;
+			// Always fire onSpeechStarted — TTS barge-in needs this even when LLM is idle
+			if (this.onSpeechStarted) this.onSpeechStarted();
+
+			if (!this.responseState.isGenerating) return;
 			this._suppressAudio = true;
+			this.responseState.requestCancel();
 
 			if (this.lastAssistantItemId) {
 				rt.send({
@@ -582,13 +668,15 @@ export class OpenAIRealtimeTransport implements LLMTransport {
 					audio_end_ms: Math.floor(this.audioOutputMs),
 				});
 			}
-			this._isModelGenerating = false;
 			if (this.onInterrupted) this.onInterrupted();
 		});
 
 		// --- Input transcription ---
-		rt.on('conversation.item.input_audio_transcription.completed', (event) => {
-			if (this.onInputTranscription) this.onInputTranscription(event.transcript);
+		rt.on('conversation.item.input_audio_transcription.completed', (event: unknown) => {
+			const e = event as { transcript?: string; usage?: unknown };
+			if (this.onInputTranscription) this.onInputTranscription(e.transcript ?? '');
+			const tu = normalizeOpenAITranscriptionUsage(e.usage);
+			if (tu && this.onRealtimeLLMUsage) this.onRealtimeLLMUsage(tu);
 		});
 
 		// --- Output transcription (streaming deltas) ---
