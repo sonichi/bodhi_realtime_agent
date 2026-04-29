@@ -96,7 +96,6 @@ export class ToolCallRouter {
 
 	/** Abort one or more pending tool executions and subagents. */
 	handleToolCallCancellation(ids: string[]): void {
-		this.deps.log(`Tool call cancellations from LLM: [${ids.join(', ')}]`);
 		this.deps.toolExecutor.cancel(ids);
 		for (const id of ids) {
 			this.deps.agentRouter.cancelSubagent(id);
@@ -198,7 +197,6 @@ export class ToolCallRouter {
 							},
 						],
 						true,
-						{ toolCallId: call.toolCallId },
 					);
 				} else {
 					this.deps.sendToolResult({
@@ -224,13 +222,12 @@ export class ToolCallRouter {
 								role: 'user',
 								parts: [
 									{
-										text: `[SYSTEM: Background task "${call.toolName}" failed: ${err instanceof Error ? err.message : String(err)}. Please apologize to the user and let them know.]`,
+										text: `[SYSTEM: Background task "${call.toolName}" failed. Exact error details: ${err instanceof Error ? err.message : String(err)}. Tell the user the exact error details first, then ask how to proceed.]`,
 									},
 								],
 							},
 						],
 						true,
-						{ toolCallId: call.toolCallId },
 					);
 				} else {
 					this.deps.sendToolResult({

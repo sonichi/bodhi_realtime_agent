@@ -15,7 +15,7 @@ The framework includes full-featured demos for both Gemini and OpenAI, with mult
 export GEMINI_API_KEY="your-key-here"
 
 # Start the voice agent
-pnpm tsx examples/hello_world/agent.ts
+pnpm tsx examples/gemini-realtime-tools.ts
 ```
 
 You should see:
@@ -49,9 +49,10 @@ Alternatively, run the same tools and agents with OpenAI's Realtime API:
 ```bash
 # Set your API key
 export OPENAI_API_KEY="your-key-here"
+export GEMINI_API_KEY="your-gemini-key" # background subagents and image tools
 
 # Start the voice agent
-pnpm tsx examples/hello_world/openai-realtime-tools.ts
+pnpm tsx examples/openai-realtime-tools.ts
 ```
 
 The OpenAI example has the same tools (calculator, current time, image generation, slow search) and agents (main, math expert) as the Gemini example. The web client works with either server without changes — audio format is negotiated automatically via `session.config`.
@@ -65,6 +66,42 @@ pnpm tsx examples/web-client.ts
 ```
 
 Open [http://localhost:8080](http://localhost:8080) in Chrome and click **Connect**.
+
+## Cartesia TTS Demo
+
+Use this demo when you want Gemini to generate text while Cartesia synthesizes the spoken audio:
+
+```bash
+export GEMINI_API_KEY="your-gemini-key"
+export CARTESIA_API_KEY="your-cartesia-key"
+pnpm tsx examples/cartesia-tts-demo.ts
+```
+
+Start `examples/web-client.ts` in another terminal and connect as usual. The session config still advertises framework PCM audio to the browser; `VoiceSession` handles provider output format negotiation and resampling.
+
+## Twilio Demos
+
+Outbound human transfer:
+
+```bash
+export GEMINI_API_KEY="your-gemini-key"
+export TWILIO_ACCOUNT_SID="ACxxxxxxxx"
+export TWILIO_AUTH_TOKEN="xxxxxxxx"
+export TWILIO_FROM_NUMBER="+1xxxxxxxxxx"
+export HUMAN_AGENT_PHONE="+1xxxxxxxxxx"
+export TWILIO_WEBHOOK_URL="https://xxxx.ngrok-free.app"
+pnpm tsx examples/twilio-demo.ts
+```
+
+Inbound phone caller to an already running agent:
+
+```bash
+export TWILIO_WEBHOOK_URL="https://xxxx.ngrok-free.app"
+export AGENT_WS_URL="ws://localhost:9900"
+pnpm tsx examples/twilio-inbound-bridge.ts
+```
+
+See [Telephony](/advanced/telephony) for Twilio webhook and media-stream details.
 
 ## Things to Try
 
@@ -211,3 +248,79 @@ Open [http://localhost:8080](http://localhost:8080) in Chrome and click **Connec
 **Claude makes zero tool calls:** Verify `ANTHROPIC_API_KEY` is set. Check server logs for `[ClaudeCode] SDK init message:` to confirm the SDK initialized correctly.
 
 **Email not sending:** Requires macOS with Mail.app configured. First use triggers a system permission dialog. Check for `[MCP:send_email] Tool invoked!` in logs.
+
+## OpenClaw Demo — Dual Specialist Agents
+
+A voice assistant backed by [OpenClaw](https://openclaw.ai), a gateway for delegating tasks to Claude. This demo uses the [relay subagent pattern](/advanced/subagents#pattern-3-relay-subagent) with separate work and general-agent routes.
+
+### Prerequisites
+
+- A Google API key (Gemini Live API)
+- An OpenClaw gateway running locally (or remotely)
+- Device identity registered with the gateway (`~/.bodhi/device-identity.json`)
+
+### Start the Agent Server
+
+```bash
+export GEMINI_API_KEY="your-gemini-key"
+export OPENCLAW_TOKEN="your-openclaw-token"
+export OPENCLAW_URL="ws://127.0.0.1:18789"  # optional, this is the default
+
+pnpm tsx examples/openclaw/openclaw-demo.ts
+```
+
+### Start the Web Client
+
+```bash
+pnpm tsx examples/openclaw/web-client.ts
+```
+
+Open [http://localhost:8080](http://localhost:8080) in Chrome and click **Connect**.
+
+### Things to Try
+
+| Say this | What happens |
+|----------|-------------|
+| "Reschedule my 3pm meeting to 4pm" | OpenClaw manages your calendar via Claude |
+| "What's on my calendar tomorrow?" | Reads calendar (runs in parallel with other tasks) |
+| "Email John a summary of the meeting notes" | Claude drafts and sends email |
+| "Generate an image of a sunset" | Image generated and stored as artifact |
+| "Email that image to me" | Artifact attached and sent via OpenClaw |
+| "Confirm that reschedule" | Classifier routes to the existing calendar session |
+| Ask two things at once | Tasks run concurrently with session isolation |
+
+### How Session Routing Works
+
+1. You speak a request and Gemini calls the `ask_openclaw` background tool
+2. The **session classifier** (LLM call, 3s timeout) decides: continue an existing session, or create a new one
+3. The **routing mutex** serializes concurrent routing decisions to prevent races
+4. The **task manager** acquires a semaphore slot and optional write lock
+5. The relay subagent sends the message to the correct OpenClaw session
+6. Results are delivered to you via voice when the current turn completes
+
+### Key Components
+
+- **Session Registry** — Tracks active sessions with recent conversation context, domain tags, and status
+- **Session Classifier** — LLM-driven routing with stale-thread reconciliation (max 1 retry)
+- **Task Manager** — Concurrency semaphore (max 10), per-domain write locks, thread TTL (10 min)
+- **Artifact Registry** — In-memory image storage for cross-tool data flow (generate then email)
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GEMINI_API_KEY` | — | Google Gemini API key |
+| `OPENCLAW_TOKEN` | — | OpenClaw gateway auth token |
+| `OPENCLAW_URL` | `ws://127.0.0.1:18789` | OpenClaw gateway WebSocket URL |
+| `PORT` | `9900` | WebSocket port for the agent server |
+| `HOST` | `0.0.0.0` | Host to bind to |
+
+### Troubleshooting
+
+**Session routing sends to wrong session:** Check server logs for `[Classifier]` messages. The classifier has a 3-second timeout — slow LLM responses fall back to creating a new session. Increase `classifierCap` if you have many active sessions.
+
+**"All background agents are busy":** The task manager semaphore (default 10 slots) is full. Wait for tasks to complete or increase `maxConcurrent`.
+
+**Image attachment fails:** Artifacts must be under 5 MB (gateway limit). Check that the artifact hasn't expired (30-minute TTL). Use "list artifacts" to see available artifacts.
+
+**Device not authorized:** Run `openclaw gateway devices approve <device-id>` on the gateway to authorize your device. Local connections auto-approve.

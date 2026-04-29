@@ -6,15 +6,27 @@ import { AgentError } from '../core/errors.js';
 import type { IEventBus } from '../core/event-bus.js';
 import type { HooksManager } from '../core/hooks.js';
 import type { SessionManager } from '../core/session-manager.js';
-import type { ClientTransport } from '../transport/client-transport.js';
 import type { MainAgent, SubagentConfig } from '../types/agent.js';
 import type { SubagentResult, ToolCall } from '../types/conversation.js';
+import type { IClientChannel } from '../types/session-client.js';
 import type { ToolDefinition } from '../types/tool.js';
 import type { LLMTransport } from '../types/transport.js';
 import { createAgentContext, resolveInstructions } from './agent-context.js';
 import { runSubagent } from './subagent-runner.js';
 import type { SubagentMessage, SubagentSession } from './subagent-session.js';
 import { SubagentSessionImpl } from './subagent-session.js';
+
+function isHandoffDebugLogging(): boolean {
+	return process.env.LOG_LEVEL === 'debug';
+}
+
+/** Best-effort model id for logs (`@ai-sdk/*` models usually set `modelId`). */
+function reasoningModelLabelForLog(model: LanguageModelV1): string {
+	const m = model as { modelId?: string };
+	return typeof m.modelId === 'string' && m.modelId.length > 0
+		? m.modelId
+		: '(LanguageModelV1: no modelId)';
+}
 
 /** Tracks a running background subagent so it can be cancelled. */
 interface ActiveSubagent {
@@ -33,6 +45,14 @@ export interface SubagentEventCallbacks {
 	onSessionEnd?: (toolCallId: string) => void;
 }
 
+/** Hooks for bridging external-audio agents with VoiceSession audio routing. */
+export interface ExternalAudioCallbacks {
+	/** Called when an external agent wants to receive raw client mic audio. */
+	setExternalAudioHandler?: (handler: ((data: Buffer) => void) | null) => void;
+	/** Called when an external agent wants to play raw PCM audio to the client. */
+	sendAudioToClient?: (data: Buffer) => void;
+}
+
 /**
  * Manages agent lifecycle: transfers between MainAgents and handoffs to background subagents.
  *
@@ -49,6 +69,8 @@ export class AgentRouter {
 	private agents = new Map<string, MainAgent>();
 	private _activeAgent: MainAgent | null = null;
 	private activeSubagents = new Map<string, ActiveSubagent>();
+	/** Response modality to include in transfer SessionUpdate (set by VoiceSession for TTS). */
+	responseModality?: 'audio' | 'text';
 
 	constructor(
 		private sessionManager: SessionManager,
@@ -56,11 +78,12 @@ export class AgentRouter {
 		private hooks: HooksManager,
 		private conversationContext: ConversationContext,
 		private transport: LLMTransport,
-		private clientTransport: ClientTransport,
+		private clientTransport: IClientChannel,
 		private model: LanguageModelV1,
 		private getInstructionSuffix?: () => string,
 		private extraTools: ToolDefinition[] = [],
 		private subagentCallbacks?: SubagentEventCallbacks,
+		private externalAudioCallbacks?: ExternalAudioCallbacks,
 	) {}
 
 	registerAgents(agents: MainAgent[]): void {
@@ -115,52 +138,66 @@ export class AgentRouter {
 		this.clientTransport.startBuffering();
 
 		try {
-			// 5. Build transfer config and state
-			const suffix = this.getInstructionSuffix?.() ?? '';
-			const resolvedInstructions = resolveInstructions(toAgent) + suffix;
-			const allTools = [...toAgent.tools, ...this.extraTools];
+			if (toAgent.audioMode === 'external') {
+				// External audio agent: disconnect LLM transport, let agent manage audio
+				await this.transport.disconnect();
+				this._activeAgent = toAgent;
 
-			const state = {
-				conversationHistory: this.conversationContext.toReplayContent(),
-			};
+				// onEnter receives context — agent wires its own audio path.
+				// Buffering continues until agent calls ctx.stopBufferingAndDrain().
+				const newCtx = this.createContext(toAgent.name);
+				await toAgent.onEnter?.(newCtx);
 
-			// 6. Single transferSession call — transport handles reconnect/replay internally
-			const providerOptions: Record<string, unknown> = {
-				...(toAgent.providerOptions ?? {}),
-			};
-			// Support legacy googleSearch field
-			if (toAgent.googleSearch !== undefined && providerOptions.googleSearch === undefined) {
-				providerOptions.googleSearch = toAgent.googleSearch;
+				this.sessionManager.transitionTo('ACTIVE');
+				this.eventBus.publish('agent.enter', {
+					sessionId: this.sessionManager.sessionId,
+					agentName: toAgent.name,
+				});
+			} else {
+				// Standard LLM agent: reconnect transport with new config
+				const suffix = this.getInstructionSuffix?.() ?? '';
+				const resolvedInstructions = resolveInstructions(toAgent) + suffix;
+				const allTools = [...toAgent.tools, ...this.extraTools];
+
+				const state = {
+					conversationHistory: this.conversationContext.toReplayContent(),
+				};
+
+				const providerOptions: Record<string, unknown> = {
+					...(toAgent.providerOptions ?? {}),
+				};
+				if (toAgent.googleSearch !== undefined && providerOptions.googleSearch === undefined) {
+					providerOptions.googleSearch = toAgent.googleSearch;
+				}
+
+				await this.transport.transferSession(
+					{
+						instructions: resolvedInstructions,
+						tools: allTools,
+						providerOptions,
+						...(this.responseModality ? { responseModality: this.responseModality } : {}),
+					},
+					state,
+				);
+
+				// Stop buffering and replay audio
+				const buffered = this.clientTransport.stopBuffering();
+				for (const chunk of buffered) {
+					this.transport.sendAudio(chunk.toString('base64'));
+				}
+
+				this.sessionManager.transitionTo('ACTIVE');
+				this._activeAgent = toAgent;
+
+				const newCtx = this.createContext(toAgent.name);
+				await toAgent.onEnter?.(newCtx);
+				this.eventBus.publish('agent.enter', {
+					sessionId: this.sessionManager.sessionId,
+					agentName: toAgent.name,
+				});
 			}
 
-			await this.transport.transferSession(
-				{
-					instructions: resolvedInstructions,
-					tools: allTools,
-					providerOptions,
-				},
-				state,
-			);
-
-			// 7. Stop buffering and replay audio
-			const buffered = this.clientTransport.stopBuffering();
-			for (const chunk of buffered) {
-				this.transport.sendAudio(chunk.toString('base64'));
-			}
-
-			// 8. Transition to ACTIVE
-			this.sessionManager.transitionTo('ACTIVE');
-			this._activeAgent = toAgent;
-
-			// 9. onEnter new agent
-			const newCtx = this.createContext(toAgent.name);
-			await toAgent.onEnter?.(newCtx);
-			this.eventBus.publish('agent.enter', {
-				sessionId: this.sessionManager.sessionId,
-				agentName: toAgent.name,
-			});
-
-			// 10. Publish transfer event
+			// Publish transfer event (both paths)
 			this.eventBus.publish('agent.transfer', {
 				sessionId: this.sessionManager.sessionId,
 				fromAgent: fromAgent.name,
@@ -200,12 +237,23 @@ export class AgentRouter {
 		return null;
 	}
 
-	/** Spawn a background subagent to handle a tool call asynchronously. */
-	async handoff(toolCall: ToolCall, subagentConfig: SubagentConfig): Promise<SubagentResult> {
+	/**
+	 * Spawn a background subagent to handle a tool call asynchronously.
+	 */
+	async handoff(
+		toolCall: ToolCall,
+		subagentConfig: SubagentConfig,
+		externalSignal?: AbortSignal,
+	): Promise<SubagentResult> {
 		const controller = new AbortController();
 		const session = subagentConfig.interactive
 			? new SubagentSessionImpl(toolCall.toolCallId, subagentConfig)
 			: undefined;
+		const onExternalAbort = () => {
+			session?.cancel();
+			controller.abort();
+		};
+		externalSignal?.addEventListener('abort', onExternalAbort);
 
 		// Wire interactive session callbacks so VoiceSession can relay
 		// subagent questions to the user and clean up interaction mode.
@@ -236,6 +284,14 @@ export class AgentRouter {
 			toolCallId: toolCall.toolCallId,
 		});
 
+		const resolvedReasoningModel = subagentConfig.reasoningModel ?? this.model;
+		const handoffWallStartedAt = Date.now();
+		if (isHandoffDebugLogging()) {
+			console.log(
+				`[AgentRouter:handoff:start] sessionId=${this.sessionManager.sessionId} toolName=${toolCall.toolName} toolCallId=${toolCall.toolCallId} subagent=${subagentConfig.name} activeAgent=${this.activeAgent.name} reasoningOverride=${Boolean(subagentConfig.reasoningModel)} resolvedModelId=${reasoningModelLabelForLog(resolvedReasoningModel)}`,
+			);
+		}
+
 		try {
 			const context = this.conversationContext.getSubagentContext(
 				{
@@ -252,13 +308,26 @@ export class AgentRouter {
 				config: subagentConfig,
 				context,
 				hooks: this.hooks,
-				model: this.model,
+				model: resolvedReasoningModel,
 				abortSignal: controller.signal,
 				session,
 			});
 
+			if (isHandoffDebugLogging()) {
+				console.log(
+					`[AgentRouter:handoff:ok] sessionId=${this.sessionManager.sessionId} toolName=${toolCall.toolName} toolCallId=${toolCall.toolCallId} subagent=${subagentConfig.name} wallMs=${Date.now() - handoffWallStartedAt} stepCount=${result.stepCount} textChars=${result.text?.length ?? 0}`,
+				);
+			}
 			return result;
+		} catch (err) {
+			if (isHandoffDebugLogging()) {
+				console.warn(
+					`[AgentRouter:handoff:error] sessionId=${this.sessionManager.sessionId} toolName=${toolCall.toolName} toolCallId=${toolCall.toolCallId} subagent=${subagentConfig.name} wallMs=${Date.now() - handoffWallStartedAt} message=${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+			throw err;
 		} finally {
+			externalSignal?.removeEventListener('abort', onExternalAbort);
 			this.activeSubagents.delete(toolCall.toolCallId);
 		}
 	}
@@ -283,6 +352,33 @@ export class AgentRouter {
 			agentName,
 			conversationContext: this.conversationContext,
 			hooks: this.hooks,
+			requestTransfer: (toAgent: string) => {
+				setImmediate(() => {
+					this.eventBus.publish('agent.transfer_requested', {
+						sessionId: this.sessionManager.sessionId,
+						toAgent,
+					});
+				});
+			},
+			stopBufferingAndDrain: (handler: (chunk: Buffer) => void) => {
+				const buffered = this.clientTransport.stopBuffering();
+				for (const chunk of buffered) {
+					handler(chunk);
+				}
+			},
+			sendJsonToClient: (message: Record<string, unknown>) => {
+				this.clientTransport.sendJsonToClient(message);
+			},
+			sendAudioToClient: (data: Buffer) => {
+				if (this.externalAudioCallbacks?.sendAudioToClient) {
+					this.externalAudioCallbacks.sendAudioToClient(data);
+					return;
+				}
+				this.clientTransport.sendAudioToClient(data);
+			},
+			setExternalAudioHandler: (handler: ((data: Buffer) => void) | null) => {
+				this.externalAudioCallbacks?.setExternalAudioHandler?.(handler);
+			},
 		});
 	}
 }

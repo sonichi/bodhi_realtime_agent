@@ -18,6 +18,10 @@ export interface TransportCapabilities {
 	contextCompression: boolean;
 	/** Provides grounding metadata with search citations (Gemini: yes, OpenAI: no). */
 	groundingMetadata: boolean;
+	/** Supports text-only response modality (required for external TTS).
+	 *  Optional — defaults to false. Existing custom transport implementations
+	 *  are unaffected until they want to support TTS. */
+	textResponseModality?: boolean;
 }
 
 /** Audio format descriptor passed to an STT provider at configuration time. */
@@ -116,6 +120,9 @@ export interface LLMTransportConfig {
 	tools?: ToolDefinition[];
 	voice?: string;
 	transcription?: { input?: boolean; output?: boolean };
+	/** Response modality. Default: 'audio' (LLM-native speech).
+	 *  Set to 'text' when using an external TTSProvider. */
+	responseModality?: 'audio' | 'text';
 	providerOptions?: Record<string, unknown>;
 }
 
@@ -129,6 +136,9 @@ export type TransportAuth =
 export interface SessionUpdate {
 	instructions?: string;
 	tools?: ToolDefinition[];
+	/** Response modality override. Used to preserve text mode across
+	 *  agent transfers and reconnects when TTSProvider is configured. */
+	responseModality?: 'audio' | 'text';
 	providerOptions?: Record<string, unknown>;
 }
 
@@ -190,6 +200,52 @@ export interface LLMTransportError {
 	recoverable: boolean;
 }
 
+/** Which realtime provider produced this usage event. */
+export type RealtimeUsageProvider = 'gemini_live' | 'openai_realtime';
+
+/** What billable slice this event describes. */
+export type RealtimeUsageKind = 'response' | 'input_transcription';
+
+/** Whether this is a mid-turn snapshot or a turn-final snapshot. */
+export type RealtimeUsagePhase = 'update' | 'final';
+
+/** Billable unit for this event (tokens vs duration-based transcription). */
+export type RealtimeUsageUnit = 'tokens' | 'duration_seconds';
+
+/** Optional per-modality token breakdown when the provider exposes it. */
+export interface RealtimeUsageModalityBreakdown {
+	inputTextTokens?: number;
+	inputAudioTokens?: number;
+	inputImageTokens?: number;
+	cachedTokens?: number;
+	cachedTextTokens?: number;
+	cachedAudioTokens?: number;
+	cachedImageTokens?: number;
+	outputTextTokens?: number;
+	outputAudioTokens?: number;
+}
+
+/**
+ * Normalized usage from Gemini Live or OpenAI Realtime transports.
+ * Carries provider-reported billable units only (no USD estimation).
+ */
+export interface RealtimeLLMUsageEvent {
+	provider: RealtimeUsageProvider;
+	kind: RealtimeUsageKind;
+	phase: RealtimeUsagePhase;
+	unit: RealtimeUsageUnit;
+	inputTokens?: number;
+	outputTokens?: number;
+	totalTokens?: number;
+	/** Present when `unit === 'duration_seconds'` (e.g. some transcription billing). */
+	durationSeconds?: number;
+	modalityBreakdown?: RealtimeUsageModalityBreakdown;
+	/** OpenAI response id when `kind === 'response'`. */
+	providerResponseId?: string;
+	/** Opaque provider payload for exact downstream reconciliation. */
+	providerRaw?: unknown;
+}
+
 /**
  * Provider-agnostic interface for realtime LLM transports.
  *
@@ -249,8 +305,28 @@ export interface LLMTransport {
 	 *  Used by VoiceSession to trigger STT provider commit. */
 	onModelTurnStart?: () => void;
 
+	// --- Text-mode callbacks (active when responseModality is 'text') ---
+	/** Fires when the model produces text output (text-mode responses).
+	 *  Only active when responseModality is 'text' (i.e., external TTS in use).
+	 *  @param text Incremental text chunk (may be partial word/sentence) */
+	onTextOutput?: (text: string) => void;
+
+	/** Fires when the model's text response is complete for this turn.
+	 *  Signals that all text for the current response has been delivered.
+	 *  Ordering contract: fires after all onTextOutput, before onTurnComplete. */
+	onTextDone?: () => void;
+
+	/** Fires when the transport detects user speech via VAD.
+	 *  Used for TTS-level barge-in when the LLM is idle but TTS is still playing.
+	 *  OpenAI: wired to input_audio_buffer.speech_started.
+	 *  Gemini: may require custom VAD signal — needs empirical testing. */
+	onSpeechStarted?: () => void;
+
 	// --- Optional capability callbacks (only fired by supporting transports) ---
 	onGoAway?: (timeLeft: string) => void;
 	onResumptionUpdate?: (handle: string, resumable: boolean) => void;
 	onGroundingMetadata?: (metadata: Record<string, unknown>) => void;
+
+	/** Optional: fires when the provider reports token or duration usage for billing/observability. */
+	onRealtimeLLMUsage?: (usage: RealtimeLLMUsageEvent) => void;
 }

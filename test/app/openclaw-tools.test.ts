@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it, vi } from 'vitest';
-import type { ChatEvent, OpenClawClient } from '../../examples/openclaw/lib/openclaw-client.js';
-import { createOpenClawSubagentConfig } from '../../examples/openclaw/lib/openclaw-tools.js';
+import type { ChatEvent, OpenClawClient } from '../../examples/lib/openclaw-client.js';
+import { createOpenClawSubagentConfig } from '../../examples/lib/openclaw-tools.js';
 
 function createMockClient(events: ChatEvent[]): OpenClawClient {
 	let eventIndex = 0;
