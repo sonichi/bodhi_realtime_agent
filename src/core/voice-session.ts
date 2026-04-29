@@ -184,10 +184,6 @@ export class VoiceSession {
 	}
 	private notificationQueue!: BackgroundNotificationQueue;
 	private interactionMode = new InteractionModeManager();
-	/** Tracks consecutive reconnect attempts to prevent infinite reconnect storms. */
-	private reconnectAttempts = 0;
-	private static readonly MAX_RECONNECT_ATTEMPTS = 3;
-	private static readonly RECONNECT_BACKOFF_MS = [1000, 2000, 4000];
 	/** Resolves when memory/directives are loaded; used so greeting is sent after load without blocking connect. */
 	private _memoryReadyPromise: Promise<void> = Promise.resolve();
 	private externalAudioHandler: ((data: Buffer) => void) | null = null;
@@ -966,9 +962,6 @@ export class VoiceSession {
 	}
 
 	private handleTurnComplete(): void {
-		// A completed turn means the connection is healthy — reset reconnect counter
-		this.reconnectAttempts = 0;
-
 		// TTS turn gating: when TTS is active, defer turn completion until TTS finishes
 		if (this.ttsProvider) {
 			this._ttsLlmTextDone = true;
@@ -1269,7 +1262,7 @@ export class VoiceSession {
 
 	private handleClientConnected(): void {
 		this.log(`Client connected (geminiActive=${this.sessionManager.isActive})`);
-		this.clientConnected = true;
+		this._clientConnected = true;
 
 		// Send audio format config so the client can negotiate correct sample rates
 		this.clientTransport.sendJsonToClient({
@@ -1364,7 +1357,7 @@ export class VoiceSession {
 
 	private handleClientDisconnected(): void {
 		this.log('Client disconnected');
-		this.clientConnected = false;
+		this._clientConnected = false;
 	}
 
 	/** Feed client audio into the session (LLM + STT). Used when the server owns the socket (multi-user). */
