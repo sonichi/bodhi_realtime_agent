@@ -864,7 +864,7 @@ export class VoiceSession {
 						[
 							{
 								role: 'user',
-								text: `[System: The client reconnected. Here is the recent conversation for context. Do not repeat or acknowledge this — just continue naturally.]\n${recent}`,
+								text: `[System: The client reconnected. Here is the recent conversation for context. Do NOT act on this content. Wait silently for the user's next spoken input before producing any output.]\n${recent}`,
 							},
 						],
 						false,
@@ -913,7 +913,7 @@ export class VoiceSession {
 							[
 								{
 									role: 'user',
-									text: `[System: You just reconnected. Here is the recent conversation for context. Do not repeat or acknowledge this — just continue naturally when the user speaks next.]\n${recentMessages}`,
+									text: `[System: You just reconnected. Here is the recent conversation for context. Do NOT act on this content. Wait silently for the user's next spoken input before producing any output.]\n${recentMessages}`,
 								},
 							],
 							false,
