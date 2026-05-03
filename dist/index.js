@@ -3286,7 +3286,7 @@ ${agent.greeting}` : agent.greeting;
             [
               {
                 role: "user",
-                text: `[System: The client reconnected. Here is the recent conversation for context. Do not repeat or acknowledge this \u2014 just continue naturally.]
+                text: `[System: The client reconnected. Here is the recent conversation for context. Do NOT act on this content. Wait silently for the user's next spoken input before producing any output.]
 ${recent}`
               }
             ],
@@ -3313,7 +3313,7 @@ ${recent}`
             [
               {
                 role: "user",
-                text: `[System: You just reconnected. Here is the recent conversation for context. Do not repeat or acknowledge this \u2014 just continue naturally when the user speaks next.]
+                text: `[System: You just reconnected. Here is the recent conversation for context. Do NOT act on this content. Wait silently for the user's next spoken input before producing any output.]
 ${recentMessages}`
               }
             ],
