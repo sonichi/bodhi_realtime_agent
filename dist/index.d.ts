@@ -1860,6 +1860,10 @@ interface VoiceSessionConfig {
  * ```
  */
 declare class VoiceSession {
+    /** Max wait for a reconnect attempt before giving up and transitioning
+     *  to CLOSED. Without this deadline, an ECONNRESET on the in-flight
+     *  reconnect WebSocket dial leaves the promise pending forever. */
+    static readonly RECONNECT_DEADLINE_MS = 30000;
     readonly eventBus: EventBus;
     readonly sessionManager: SessionManager;
     readonly conversationContext: ConversationContext;

@@ -101,6 +101,11 @@ export interface VoiceSessionConfig {
  * ```
  */
 export class VoiceSession {
+	/** Max wait for a reconnect attempt before giving up and transitioning
+	 *  to CLOSED. Without this deadline, an ECONNRESET on the in-flight
+	 *  reconnect WebSocket dial leaves the promise pending forever. */
+	static readonly RECONNECT_DEADLINE_MS = 30_000;
+
 	readonly eventBus: EventBus;
 	readonly sessionManager: SessionManager;
 	readonly conversationContext: ConversationContext;
@@ -750,8 +755,33 @@ export class VoiceSession {
 			this.sessionManager.transitionTo('RECONNECTING');
 			this.clientTransport.startBuffering();
 
-			this.transport
-				.reconnect({ conversationHistory: this.conversationContext.toReplayContent() })
+			// Wrap the reconnect promise in a deadline race. Without this, an
+			// ECONNRESET on the in-flight reconnect WebSocket dial leaves the
+			// transport.reconnect() promise pending forever — the session
+			// stays in RECONNECTING with no transition to ACTIVE or CLOSED,
+			// requiring manual `launchctl kickstart` to recover. Observed live
+			// 2026-05-01: 5+ minutes of stuck RECONNECTING after a transient
+			// ECONNRESET hit while already mid-reconnect.
+			const reconnectPromise = this.transport.reconnect({
+				conversationHistory: this.conversationContext.toReplayContent(),
+			});
+			let deadlineHandle: ReturnType<typeof setTimeout> | undefined;
+			const deadlinePromise = new Promise<never>((_, reject) => {
+				deadlineHandle = setTimeout(
+					() =>
+						reject(
+							new Error(
+								`Reconnect timed out after ${VoiceSession.RECONNECT_DEADLINE_MS}ms — transitioning to CLOSED so caller can re-arm`,
+							),
+						),
+					VoiceSession.RECONNECT_DEADLINE_MS,
+				);
+			});
+
+			Promise.race([reconnectPromise, deadlinePromise])
+				.finally(() => {
+					if (deadlineHandle) clearTimeout(deadlineHandle);
+				})
 				.then(() => {
 					if (this.sessionManager.state === 'CLOSED') {
 						this.log('Reconnect succeeded but session already CLOSED — skipping ACTIVE transition');

@@ -2801,7 +2801,11 @@ function toolToDeclaration(tool2) {
 }
 
 // src/core/voice-session.ts
-var VoiceSession = class {
+var VoiceSession = class _VoiceSession {
+  /** Max wait for a reconnect attempt before giving up and transitioning
+   *  to CLOSED. Without this deadline, an ECONNRESET on the in-flight
+   *  reconnect WebSocket dial leaves the promise pending forever. */
+  static RECONNECT_DEADLINE_MS = 3e4;
   eventBus;
   sessionManager;
   conversationContext;
@@ -3287,7 +3291,23 @@ ${agent.greeting}` : agent.greeting;
     if (handle) {
       this.sessionManager.transitionTo("RECONNECTING");
       this.clientTransport.startBuffering();
-      this.transport.reconnect({ conversationHistory: this.conversationContext.toReplayContent() }).then(() => {
+      const reconnectPromise = this.transport.reconnect({
+        conversationHistory: this.conversationContext.toReplayContent()
+      });
+      let deadlineHandle;
+      const deadlinePromise = new Promise((_, reject) => {
+        deadlineHandle = setTimeout(
+          () => reject(
+            new Error(
+              `Reconnect timed out after ${_VoiceSession.RECONNECT_DEADLINE_MS}ms \u2014 transitioning to CLOSED so caller can re-arm`
+            )
+          ),
+          _VoiceSession.RECONNECT_DEADLINE_MS
+        );
+      });
+      Promise.race([reconnectPromise, deadlinePromise]).finally(() => {
+        if (deadlineHandle) clearTimeout(deadlineHandle);
+      }).then(() => {
         if (this.sessionManager.state === "CLOSED") {
           this.log("Reconnect succeeded but session already CLOSED \u2014 skipping ACTIVE transition");
           this.clientTransport.stopBuffering();
