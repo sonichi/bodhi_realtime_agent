@@ -158,6 +158,64 @@ await session.start();
 // Connect a WebSocket audio client to ws://localhost:9900
 ```
 
+## OpenAI Realtime & Azure (`protocolVersion`)
+
+The default main-agent transport is Gemini Live (above). To use the **OpenAI
+Realtime API** instead, construct an `OpenAIRealtimeTransport` and pass it to the
+session as `transport:` — it overrides the Gemini fields:
+
+```typescript
+import { VoiceSession, OpenAIRealtimeTransport } from 'bodhi-realtime-agent';
+
+const session = new VoiceSession({
+  sessionId: `session_${Date.now()}`,
+  userId: 'user_1',
+  agents: [mainAgent],
+  initialAgent: 'main',
+  port: 9900,
+  // Overrides Gemini Live with OpenAI Realtime:
+  transport: new OpenAIRealtimeTransport({
+    apiKey: process.env.OPENAI_API_KEY!,
+    model: 'gpt-realtime',
+    voice: 'coral',
+    // protocolVersion defaults to 'ga' — omit it for standard OpenAI.
+  }),
+});
+```
+
+### `protocolVersion`: `'ga'` (default) vs `'legacy'`
+
+OpenAI shipped a breaking change to the realtime wire format in Aug 2025. The
+transport supports both shapes via one option:
+
+| Value | Use for | Session shape | Audio delta event |
+|-------|---------|---------------|-------------------|
+| `'ga'` *(default)* | OpenAI realtime, and Azure deployments on the GA spec | `type='realtime'`, nested `audio.input` / `audio.output` | `response.output_audio.delta` |
+| `'legacy'` | **Azure OpenAI realtime _preview_ endpoints** | pre-GA flat shape (no `type`, flat audio config) | `response.audio.delta` (aliased) |
+
+Leave it unset for OpenAI and GA-spec Azure deployments. Set `'legacy'` only when
+your endpoint rejects the GA session shape (Azure preview returns
+`Unknown parameter: session.type`):
+
+```typescript
+new OpenAIRealtimeTransport({
+  apiKey: azureKey,
+  model: deploymentName,   // your Azure deployment, e.g. 'gpt-realtime-mini'
+  voice: 'alloy',
+  protocolVersion: 'legacy',
+});
+```
+
+> **Azure endpoint routing.** `OpenAIRealtimeTransport` builds a standard OpenAI
+> client from `apiKey`. To target an Azure resource, point the underlying client
+> at your Azure endpoint — e.g. swap in an `AzureOpenAI` client and route the
+> socket through `OpenAIRealtimeWS.azure(client, { deploymentName })`. The
+> `protocolVersion: 'legacy'` flag handles the *wire-format* differences; the
+> client handles *where the connection goes*. Both are needed for Azure preview.
+
+`'legacy'` is purely opt-in: when unset, the transport is byte-for-byte the GA
+path, so existing Gemini and OpenAI consumers are unaffected.
+
 ## Core Concepts
 
 ### VoiceSession
