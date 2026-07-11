@@ -54,6 +54,12 @@ export interface VoiceSessionConfig {
 	model: LanguageModelV1;
 	/** Voice configuration for Gemini's speech output. */
 	speechConfig?: { voiceName?: string };
+	/** Optional audio-emission gate. If provided, it is consulted for each chunk of
+	 *  model audio *after* per-turn accounting but *before* the audio is sent to the
+	 *  client; returning false suppresses that chunk (the turn's bookkeeping still runs).
+	 *  The embedding app supplies the policy (e.g. "only emit for human speakers");
+	 *  bodhi stays policy-agnostic — it just provides the seam. */
+	shouldEmitAudio?: () => boolean;
 	/** Context window compression thresholds. */
 	compressionConfig?: { triggerTokens: number; targetTokens: number };
 	/** Gemini automatic-VAD tuning — passed through to the Live API as
@@ -597,6 +603,13 @@ export class VoiceSession {
 		this.notificationQueue.markAudioReceived();
 		if (this.turnFirstAudioAt === null) {
 			this.turnFirstAudioAt = Date.now();
+		}
+		// Audio-emission gate: consulted AFTER the turn accounting above (so a
+		// suppressed chunk still keeps lifecycle bookkeeping correct) and BEFORE the
+		// emit (so it actually mutes). Policy is supplied by the embedding app via
+		// config.shouldEmitAudio; bodhi stays policy-agnostic.
+		if (this.config.shouldEmitAudio && !this.config.shouldEmitAudio()) {
+			return;
 		}
 		const buffer = Buffer.from(data, 'base64');
 		// EchoGuard reference: remember what we are playing so inbound echo of it
