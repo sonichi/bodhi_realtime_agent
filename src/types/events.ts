@@ -49,6 +49,30 @@ export interface EventPayloadMap {
 	'turn.end': { sessionId: string; turnId: string };
 	'turn.interrupted': { sessionId: string; turnId: string };
 
+	// Generation lifecycle — a PAIR, and a different boundary from the three
+	// above. Those observe the Gemini protocol: turn.end is turnComplete and
+	// nothing more. A generation outlives turnComplete, because the tool call
+	// that finishes an answer arrives after it. A consumer building per-answer
+	// state must key on these, not on turn.*, or it closes its candidate
+	// before the tail arrives.
+	//
+	// generationId is the transport's own counter, deliberately not turnId:
+	// the two count different things, and a generation still draining would
+	// otherwise report its end under the next turn's id.
+	'generation.start': { sessionId: string; generationId: string };
+	'generation.end': {
+		sessionId: string;
+		generationId: string;
+		/**
+		 * generationComplete — the provider said so.
+		 * interrupted        — barged in on.
+		 * superseded         — the model began speaking again without ever
+		 *                      sending generationComplete.
+		 * disconnected       — the session went away with one open.
+		 */
+		reason: 'generationComplete' | 'interrupted' | 'superseded' | 'disconnected';
+	};
+
 	// GUI events
 	'gui.update': { sessionId: string; data: Record<string, unknown> };
 	'gui.notification': { sessionId: string; message: string };

@@ -165,6 +165,7 @@ interface ToolContext {
     setDirective?(key: string, value: string | null, scope?: 'session' | 'agent'): void;
 }
 
+type GenerationEndReason = 'generationComplete' | 'interrupted' | 'superseded' | 'disconnected';
 /** Static capabilities — orchestrator branches on these, never on provider names. */
 interface TransportCapabilities {
     /** Can truncate server-side message at audio playback position (OpenAI: yes, Gemini: no). */
@@ -473,7 +474,11 @@ interface LLMTransport {
     onClose?: (code?: number, reason?: string) => void;
     /** Fires when the model begins any response (audio, tool call, etc.).
      *  Used by VoiceSession to trigger STT provider commit. */
-    onModelTurnStart?: () => void;
+    onModelTurnStart?: (generationId?: string) => void;
+    /** A generation opened. Paired with onGenerationEnd; see events.ts. */
+    onGenerationStart?: (generationId: string) => void;
+    /** That generation closed, and why. Fires exactly once per start. */
+    onGenerationEnd?: (generationId: string, reason: GenerationEndReason) => void;
     onGoAway?: (timeLeft: string) => void;
     onResumptionUpdate?: (handle: string, resumable: boolean) => void;
     onGroundingMetadata?: (metadata: Record<string, unknown>) => void;
@@ -968,6 +973,22 @@ interface EventPayloadMap {
     'turn.interrupted': {
         sessionId: string;
         turnId: string;
+    };
+    'generation.start': {
+        sessionId: string;
+        generationId: string;
+    };
+    'generation.end': {
+        sessionId: string;
+        generationId: string;
+        /**
+         * generationComplete — the provider said so.
+         * interrupted        — barged in on.
+         * superseded         — the model began speaking again without ever
+         *                      sending generationComplete.
+         * disconnected       — the session went away with one open.
+         */
+        reason: 'generationComplete' | 'interrupted' | 'superseded' | 'disconnected';
     };
     'gui.update': {
         sessionId: string;
@@ -2631,7 +2652,11 @@ interface GeminiTransportCallbacks {
     /** Model's response was interrupted by user speech. */
     onInterrupted?(): void;
     /** Model started a new response turn (first audio or tool call). */
-    onModelTurnStart?(): void;
+    onModelTurnStart?(generationId?: string): void;
+    /** A generation opened. Paired with onGenerationEnd; see events.ts. */
+    onGenerationStart?(generationId: string): void;
+    /** That generation closed, and why. Fires exactly once per start. */
+    onGenerationEnd?(generationId: string, reason: GenerationEndReason): void;
     /** The model finished generating. Distinct from turnComplete. */
     onGenerationComplete?(): void;
     /** Transcription of user's spoken input. */
@@ -2678,7 +2703,26 @@ declare class GeminiLiveTransport implements LLMTransport {
     private notifyLifecycleObserver;
     private emitLifecycle;
     /** Tracks whether onModelTurnStart has already fired for the current turn. */
-    private _modelTurnStarted;
+    /**
+     * Where the current generation is. A generation is the unit a consumer
+     * builds per-answer state on; it is NOT a Gemini turn.
+     *
+     *   idle            --modelTurn|toolCall-->  active
+     *   active          --turnComplete------->   draining   (identity survives)
+     *   active|draining --generationComplete-->  terminal
+     *   active|draining --interrupted-------->   terminal
+     *   draining        --modelTurn---------->   active     (NEW generation)
+     *   terminal        --modelTurn|toolCall-->  active     (NEW generation)
+     *
+     * turnComplete used to clear a boolean here, so a tool call arriving after
+     * it was necessarily relabelled the start of a new model turn even when it
+     * was this generation's own tail. Only provider events move this — nothing
+     * times or gaps a boundary.
+     */
+    private _genState;
+    /** Identity of that generation. Its own counter, not the session's turnId. */
+    private _genSeq;
+    private _genId;
     readonly capabilities: TransportCapabilities;
     readonly audioFormat: AudioFormatSpec;
     onAudioOutput?: (base64Data: string) => void;
@@ -2691,7 +2735,9 @@ declare class GeminiLiveTransport implements LLMTransport {
     onSessionReady?: (sessionId: string) => void;
     onError?: (error: LLMTransportError) => void;
     onClose?: (code?: number, reason?: string) => void;
-    onModelTurnStart?: () => void;
+    onModelTurnStart?: (generationId?: string) => void;
+    onGenerationStart?: (generationId: string) => void;
+    onGenerationEnd?: (generationId: string, reason: GenerationEndReason) => void;
     onGenerationComplete?: () => void;
     onGoAway?: (timeLeft: string) => void;
     /** Property form — VoiceSession wires these, not the constructor callbacks.
@@ -2726,6 +2772,17 @@ declare class GeminiLiveTransport implements LLMTransport {
      *  bounded async cleanup: 'closed' when close() completed, 'forced' on
      *  timeout or close error. */
     abortIncumbent(): Promise<'closed' | 'forced'>;
+    /**
+     * Open a generation if provider output means a NEW one has begun.
+     *
+     * `audioOpensNew` is the one asymmetry: from `draining`, a tool call is this
+     * generation's tail, but model audio cannot be — the model speaking again is
+     * a new answer. That rule is what keeps the machine from wedging if
+     * generationComplete never arrives.
+     */
+    private beginGenerationIfNew;
+    /** The single exit, so every terminal reason fires exactly one end. */
+    private endGeneration;
     disconnect(): Promise<void>;
     private noteAttempt;
     private noteSkip;

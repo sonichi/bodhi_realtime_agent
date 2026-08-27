@@ -2,6 +2,12 @@
 
 import type { ToolDefinition } from './tool.js';
 
+export type GenerationEndReason =
+	| 'generationComplete'
+	| 'interrupted'
+	| 'superseded'
+	| 'disconnected';
+
 /** Static capabilities — orchestrator branches on these, never on provider names. */
 export interface TransportCapabilities {
 	/** Can truncate server-side message at audio playback position (OpenAI: yes, Gemini: no). */
@@ -313,7 +319,11 @@ export interface LLMTransport {
 	// --- Turn lifecycle callbacks ---
 	/** Fires when the model begins any response (audio, tool call, etc.).
 	 *  Used by VoiceSession to trigger STT provider commit. */
-	onModelTurnStart?: () => void;
+	onModelTurnStart?: (generationId?: string) => void;
+	/** A generation opened. Paired with onGenerationEnd; see events.ts. */
+	onGenerationStart?: (generationId: string) => void;
+	/** That generation closed, and why. Fires exactly once per start. */
+	onGenerationEnd?: (generationId: string, reason: GenerationEndReason) => void;
 
 	// --- Optional capability callbacks (only fired by supporting transports) ---
 	onGoAway?: (timeLeft: string) => void;

@@ -13,6 +13,7 @@ import type {
 	AudioFormatSpec,
 	ConnectionLifecycleEvent,
 	ContentTurn,
+	GenerationEndReason,
 	LLMTransport,
 	LLMTransportConfig,
 	LLMTransportError,
@@ -95,7 +96,11 @@ export interface GeminiTransportCallbacks {
 	/** Model's response was interrupted by user speech. */
 	onInterrupted?(): void;
 	/** Model started a new response turn (first audio or tool call). */
-	onModelTurnStart?(): void;
+	onModelTurnStart?(generationId?: string): void;
+	/** A generation opened. Paired with onGenerationEnd; see events.ts. */
+	onGenerationStart?(generationId: string): void;
+	/** That generation closed, and why. Fires exactly once per start. */
+	onGenerationEnd?(generationId: string, reason: GenerationEndReason): void;
 	/** The model finished generating. Distinct from turnComplete. */
 	onGenerationComplete?(): void;
 	/** Transcription of user's spoken input. */
@@ -194,7 +199,26 @@ export class GeminiLiveTransport implements LLMTransport {
 		this.notifyLifecycleObserver(() => this.onConnectionLifecycle?.(event));
 	}
 	/** Tracks whether onModelTurnStart has already fired for the current turn. */
-	private _modelTurnStarted = false;
+	/**
+	 * Where the current generation is. A generation is the unit a consumer
+	 * builds per-answer state on; it is NOT a Gemini turn.
+	 *
+	 *   idle            --modelTurn|toolCall-->  active
+	 *   active          --turnComplete------->   draining   (identity survives)
+	 *   active|draining --generationComplete-->  terminal
+	 *   active|draining --interrupted-------->   terminal
+	 *   draining        --modelTurn---------->   active     (NEW generation)
+	 *   terminal        --modelTurn|toolCall-->  active     (NEW generation)
+	 *
+	 * turnComplete used to clear a boolean here, so a tool call arriving after
+	 * it was necessarily relabelled the start of a new model turn even when it
+	 * was this generation's own tail. Only provider events move this — nothing
+	 * times or gaps a boundary.
+	 */
+	private _genState: 'idle' | 'active' | 'draining' | 'terminal' = 'idle';
+	/** Identity of that generation. Its own counter, not the session's turnId. */
+	private _genSeq = 0;
+	private _genId = 'gen_0';
 
 	// --- LLMTransport static properties ---
 
@@ -228,7 +252,9 @@ export class GeminiLiveTransport implements LLMTransport {
 	onSessionReady?: (sessionId: string) => void;
 	onError?: (error: LLMTransportError) => void;
 	onClose?: (code?: number, reason?: string) => void;
-	onModelTurnStart?: () => void;
+	onModelTurnStart?: (generationId?: string) => void;
+	onGenerationStart?: (generationId: string) => void;
+	onGenerationEnd?: (generationId: string, reason: GenerationEndReason) => void;
 	onGenerationComplete?: () => void;
 	onGoAway?: (timeLeft: string) => void;
 	/** Property form — VoiceSession wires these, not the constructor callbacks.
@@ -461,7 +487,8 @@ export class GeminiLiveTransport implements LLMTransport {
 		this.dialGen += 1;
 		const incumbent = this.session;
 		this.session = null;
-		this._modelTurnStarted = false;
+		this.endGeneration('disconnected');
+		this._genState = 'idle';
 		this.config.resumptionHandle = undefined;
 		if (!incumbent) return Promise.resolve('closed');
 		return new Promise((resolve) => {
@@ -481,8 +508,39 @@ export class GeminiLiveTransport implements LLMTransport {
 		});
 	}
 
+	/**
+	 * Open a generation if provider output means a NEW one has begun.
+	 *
+	 * `audioOpensNew` is the one asymmetry: from `draining`, a tool call is this
+	 * generation's tail, but model audio cannot be — the model speaking again is
+	 * a new answer. That rule is what keeps the machine from wedging if
+	 * generationComplete never arrives.
+	 */
+	private beginGenerationIfNew(audioOpensNew: boolean): void {
+		if (this._genState === 'active') return;
+		if (this._genState === 'draining' && !audioOpensNew) return;
+		if (this._genState === 'draining') this.endGeneration('superseded');
+		this._genState = 'active';
+		this._genId = `gen_${this._genSeq}`;
+		this.callbacks.onModelTurnStart?.(this._genId);
+		if (this.onModelTurnStart) this.onModelTurnStart(this._genId);
+		this.callbacks.onGenerationStart?.(this._genId);
+		if (this.onGenerationStart) this.onGenerationStart(this._genId);
+	}
+
+	/** The single exit, so every terminal reason fires exactly one end. */
+	private endGeneration(reason: GenerationEndReason): void {
+		if (this._genState !== 'active' && this._genState !== 'draining') return;
+		this._genState = 'terminal';
+		const id = this._genId;
+		this._genSeq++;
+		this.callbacks.onGenerationEnd?.(id, reason);
+		if (this.onGenerationEnd) this.onGenerationEnd(id, reason);
+	}
+
 	async disconnect(): Promise<void> {
-		this._modelTurnStarted = false;
+		this.endGeneration('disconnected');
+		this._genState = 'idle';
 		// Capture the incumbent before awaiting: a recovery can replace
 		// this.session while close() is in flight, and the replacement must
 		// survive this call untouched.
@@ -926,11 +984,7 @@ export class GeminiLiveTransport implements LLMTransport {
 
 			// Audio output — fire onModelTurnStart on first modelTurn.parts per turn
 			if (content.modelTurn?.parts) {
-				if (!this._modelTurnStarted) {
-					this._modelTurnStarted = true;
-					this.callbacks.onModelTurnStart?.();
-					if (this.onModelTurnStart) this.onModelTurnStart();
-				}
+				this.beginGenerationIfNew(true);
 				for (const part of content.modelTurn.parts) {
 					if (part.inlineData?.data) {
 						this.callbacks.onAudioOutput?.(part.inlineData.data);
@@ -958,6 +1012,8 @@ export class GeminiLiveTransport implements LLMTransport {
 
 			// Turn signals
 			if (content.interrupted) {
+				// Barged in on: this generation is over.
+				this.endGeneration('interrupted');
 				this.callbacks.onInterrupted?.();
 				if (this.onInterrupted) this.onInterrupted();
 			}
@@ -967,11 +1023,14 @@ export class GeminiLiveTransport implements LLMTransport {
 			// turnComplete as generation-final. Surfaced, not acted on: nothing
 			// below changes what turnComplete does.
 			if (content.generationComplete) {
+				this.endGeneration('generationComplete');
 				this.callbacks.onGenerationComplete?.();
 				if (this.onGenerationComplete) this.onGenerationComplete();
 			}
 			if (content.turnComplete) {
-				this._modelTurnStarted = false;
+				// DRAINING, not over. A late tool call still belongs to this
+				// generation. The callbacks below are unchanged.
+				if (this._genState === 'active') this._genState = 'draining';
 				this.callbacks.onTurnComplete?.();
 				if (this.onTurnComplete) this.onTurnComplete();
 			}
@@ -979,12 +1038,10 @@ export class GeminiLiveTransport implements LLMTransport {
 		}
 
 		if (msg.toolCall?.functionCalls?.length) {
-			// Fire onModelTurnStart on first toolCall if no audio preceded it
-			if (!this._modelTurnStarted) {
-				this._modelTurnStarted = true;
-				this.callbacks.onModelTurnStart?.();
-				if (this.onModelTurnStart) this.onModelTurnStart();
-			}
+			// A tool call opens a generation only if none is underway. After a
+			// turnComplete it is this generation's tail, NOT a new turn — that
+			// misread is what made one answer look like two.
+			this.beginGenerationIfNew(false);
 			this.callbacks.onToolCall?.(msg.toolCall.functionCalls);
 			if (this.onToolCall) this.onToolCall(msg.toolCall.functionCalls);
 			return;
