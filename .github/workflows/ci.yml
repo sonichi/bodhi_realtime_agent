@@ -32,5 +32,12 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Verify dist/ is up to date
+        run: |
+          if ! git diff --exit-code dist/; then
+            echo "::error::dist/ is stale. Run 'pnpm build' and commit the result before merging."
+            exit 1
+          fi
+
       - name: Test
         run: pnpm test
