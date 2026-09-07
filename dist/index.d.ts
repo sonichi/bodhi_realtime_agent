@@ -1896,6 +1896,8 @@ declare class TranscriptManager {
      * Called before tool execution so post-tool transcription can be deduplicated.
      */
     saveOutputPrefix(): void;
+    /** Drop model output that a muted host did not deliver to its audience. */
+    discardOutput(): void;
     /**
      * Flush only the input transcript buffer — finalize as a user message and
      * send a non-partial transcript to the client. Used before tool calls so
@@ -2335,6 +2337,8 @@ declare class VoiceSession {
     transfer(toAgent: string): Promise<void>;
     /** Name of the agent currently owning the live session. */
     get activeAgentName(): string;
+    /** Remove pending assistant transcript when the host suppressed its audio. */
+    discardPendingAssistantOutput(): void;
     private activateAgentTools;
     private createToolExecutor;
     private handleAudioFromClient;

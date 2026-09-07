@@ -1583,6 +1583,11 @@ var TranscriptManager = class {
       this.outputBuffer = "";
     }
   }
+  /** Drop model output that a muted host did not deliver to its audience. */
+  discardOutput() {
+    this.outputBuffer = "";
+    this.outputPrefix = "";
+  }
   /**
    * Flush only the input transcript buffer — finalize as a user message and
    * send a non-partial transcript to the client. Used before tool calls so
@@ -3948,6 +3953,10 @@ var VoiceSession = class _VoiceSession {
   /** Name of the agent currently owning the live session. */
   get activeAgentName() {
     return this.agentRouter.activeAgent.name;
+  }
+  /** Remove pending assistant transcript when the host suppressed its audio. */
+  discardPendingAssistantOutput() {
+    this.transcriptManager.discardOutput();
   }
   activateAgentTools(agent) {
     this.toolExecutor = this.createToolExecutor(agent.name);

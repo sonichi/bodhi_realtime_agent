@@ -130,6 +130,18 @@ describe('TranscriptManager', () => {
 		expect(sink.assistantMessages[0]).toBe('Hello world');
 	});
 
+	it('discards output suppressed by a muted host', () => {
+		const sink = createSink();
+		const mgr = new TranscriptManager(sink);
+
+		mgr.handleOutput('unheard listener text');
+		mgr.saveOutputPrefix();
+		mgr.discardOutput();
+		mgr.flush();
+
+		expect(sink.assistantMessages).toEqual([]);
+	});
+
 	it('ignores whitespace-only input', () => {
 		const sink = createSink();
 		const mgr = new TranscriptManager(sink);

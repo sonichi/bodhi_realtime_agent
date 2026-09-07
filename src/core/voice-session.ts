@@ -914,6 +914,11 @@ export class VoiceSession {
 		return this.agentRouter.activeAgent.name;
 	}
 
+	/** Remove pending assistant transcript when the host suppressed its audio. */
+	discardPendingAssistantOutput(): void {
+		this.transcriptManager.discardOutput();
+	}
+
 	private activateAgentTools(agent: MainAgent): void {
 		this.toolExecutor = this.createToolExecutor(agent.name);
 		const behaviorTools = this.behaviorManager?.tools ?? [];
