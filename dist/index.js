@@ -481,7 +481,7 @@ Arguments: ${JSON.stringify(context.task.args)}` : `Execute the task: ${context.
 
 // src/agent/agent-router.ts
 var AgentRouter = class {
-  constructor(sessionManager, eventBus, hooks, conversationContext, transport, clientTransport, model, getInstructionSuffix, extraTools = [], subagentCallbacks) {
+  constructor(sessionManager, eventBus, hooks, conversationContext, transport, clientTransport, model, getInstructionSuffix, extraTools = [], subagentCallbacks, bufferClientAudioDuringTransfer = true) {
     this.sessionManager = sessionManager;
     this.eventBus = eventBus;
     this.hooks = hooks;
@@ -492,6 +492,7 @@ var AgentRouter = class {
     this.getInstructionSuffix = getInstructionSuffix;
     this.extraTools = extraTools;
     this.subagentCallbacks = subagentCallbacks;
+    this.bufferClientAudioDuringTransfer = bufferClientAudioDuringTransfer;
   }
   agents = /* @__PURE__ */ new Map();
   _activeAgent = null;
@@ -538,7 +539,7 @@ var AgentRouter = class {
       fromAgent: fromAgent.name,
       toAgent: toAgentName
     });
-    this.clientTransport.startBuffering();
+    if (this.bufferClientAudioDuringTransfer) this.clientTransport.startBuffering();
     try {
       const suffix = this.getInstructionSuffix?.() ?? "";
       const resolvedInstructions = resolveInstructions(toAgent) + suffix;
@@ -562,7 +563,7 @@ var AgentRouter = class {
       );
       this._activeAgent = toAgent;
       this.subagentCallbacks?.onAgentActivated?.(toAgent);
-      const buffered = this.clientTransport.stopBuffering();
+      const buffered = this.bufferClientAudioDuringTransfer ? this.clientTransport.stopBuffering() : [];
       for (const chunk of buffered) {
         this.transport.sendAudio(chunk.toString("base64"));
       }
@@ -579,7 +580,7 @@ var AgentRouter = class {
         toAgent: toAgentName
       });
     } catch (err) {
-      this.clientTransport.stopBuffering();
+      if (this.bufferClientAudioDuringTransfer) this.clientTransport.stopBuffering();
       this.sessionManager.transitionTo("CLOSED");
       const error = new AgentError(
         `Transfer to "${toAgentName}" failed: ${err instanceof Error ? err.message : String(err)}`
@@ -3822,7 +3823,8 @@ var VoiceSession = class _VoiceSession {
         onMessage: (toolCallId, msg) => this.handleSubagentMessage(toolCallId, msg),
         onSessionEnd: (toolCallId) => this.interactionMode.deactivate(toolCallId),
         onAgentActivated: (agent) => this.activateAgentTools(agent)
-      }
+      },
+      config.bufferClientAudioDuringTransfer ?? true
     );
     this.agentRouter.registerAgents(config.agents);
     this.agentRouter.setInitialAgent(config.initialAgent);

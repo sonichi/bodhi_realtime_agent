@@ -190,6 +190,32 @@ describe('AgentRouter', () => {
 			expect(onAgentActivated).toHaveBeenCalledWith(expect.objectContaining({ name: 'booking' }));
 		});
 
+		it('lets a direct-audio host own the only transfer buffer', async () => {
+			const { eventBus, hooks, convCtx, sessionMgr, transport, client } = setup();
+			const router = new AgentRouter(
+				sessionMgr,
+				eventBus,
+				hooks,
+				convCtx,
+				transport as unknown as LLMTransport,
+				client as unknown as ClientTransport,
+				mockModel,
+				undefined,
+				[],
+				undefined,
+				false,
+			);
+			router.registerAgents([createTestAgent('general'), createTestAgent('booking')]);
+			router.setInitialAgent('general');
+			sessionMgr.transitionTo('CONNECTING');
+			sessionMgr.transitionTo('ACTIVE');
+
+			await router.transfer('booking');
+
+			expect(client.startBuffering).not.toHaveBeenCalled();
+			expect(client.stopBuffering).not.toHaveBeenCalled();
+		});
+
 		it('prepends language directive on transfer when agent has language', async () => {
 			const { router, sessionMgr, transport } = setup();
 			router.registerAgents([

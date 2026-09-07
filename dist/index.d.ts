@@ -1408,10 +1408,11 @@ declare class AgentRouter {
     private getInstructionSuffix?;
     private extraTools;
     private subagentCallbacks?;
+    private bufferClientAudioDuringTransfer;
     private agents;
     private _activeAgent;
     private activeSubagents;
-    constructor(sessionManager: SessionManager, eventBus: IEventBus, hooks: HooksManager, conversationContext: ConversationContext, transport: LLMTransport, clientTransport: ClientTransport, model: LanguageModelV1, getInstructionSuffix?: (() => string) | undefined, extraTools?: ToolDefinition[], subagentCallbacks?: SubagentEventCallbacks | undefined);
+    constructor(sessionManager: SessionManager, eventBus: IEventBus, hooks: HooksManager, conversationContext: ConversationContext, transport: LLMTransport, clientTransport: ClientTransport, model: LanguageModelV1, getInstructionSuffix?: (() => string) | undefined, extraTools?: ToolDefinition[], subagentCallbacks?: SubagentEventCallbacks | undefined, bufferClientAudioDuringTransfer?: boolean);
     registerAgents(agents: MainAgent[]): void;
     setInitialAgent(agentName: string): void;
     get activeAgent(): MainAgent;
@@ -2156,6 +2157,8 @@ interface VoiceSessionConfig {
     suppressClientAutoActions?: () => boolean;
     /** Greet when a host carries transport audio without a WebSocket client. */
     greetWithoutClient?: boolean;
+    /** Disable the built-in client buffer when a direct-audio host owns transfer buffering. */
+    bufferClientAudioDuringTransfer?: boolean;
     /** With shadowSttProvider set: on divergence, SPEAK a self-correction — the
      *  model is told what the user actually said and answers the real question
      *  ("说错自纠", owner-selected option ① 2026-07-30). The shadow result

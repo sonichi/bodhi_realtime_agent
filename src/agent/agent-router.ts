@@ -63,6 +63,7 @@ export class AgentRouter {
 		private getInstructionSuffix?: () => string,
 		private extraTools: ToolDefinition[] = [],
 		private subagentCallbacks?: SubagentEventCallbacks,
+		private bufferClientAudioDuringTransfer = true,
 	) {}
 
 	registerAgents(agents: MainAgent[]): void {
@@ -119,7 +120,7 @@ export class AgentRouter {
 		});
 
 		// 4. Start buffering client audio
-		this.clientTransport.startBuffering();
+		if (this.bufferClientAudioDuringTransfer) this.clientTransport.startBuffering();
 
 		try {
 			// 5. Build transfer config and state
@@ -154,7 +155,9 @@ export class AgentRouter {
 			this.subagentCallbacks?.onAgentActivated?.(toAgent);
 
 			// 8. Stop buffering and replay audio
-			const buffered = this.clientTransport.stopBuffering();
+			const buffered = this.bufferClientAudioDuringTransfer
+				? this.clientTransport.stopBuffering()
+				: [];
 			for (const chunk of buffered) {
 				this.transport.sendAudio(chunk.toString('base64'));
 			}
@@ -178,7 +181,7 @@ export class AgentRouter {
 			});
 		} catch (err) {
 			// Transfer failed — session is broken, clean up and transition to CLOSED
-			this.clientTransport.stopBuffering();
+			if (this.bufferClientAudioDuringTransfer) this.clientTransport.stopBuffering();
 			this.sessionManager.transitionTo('CLOSED');
 			const error = new AgentError(
 				`Transfer to "${toAgentName}" failed: ${err instanceof Error ? err.message : String(err)}`,

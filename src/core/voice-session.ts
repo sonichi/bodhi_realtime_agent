@@ -131,6 +131,8 @@ export interface VoiceSessionConfig {
 	suppressClientAutoActions?: () => boolean;
 	/** Greet when a host carries transport audio without a WebSocket client. */
 	greetWithoutClient?: boolean;
+	/** Disable the built-in client buffer when a direct-audio host owns transfer buffering. */
+	bufferClientAudioDuringTransfer?: boolean;
 	/** With shadowSttProvider set: on divergence, SPEAK a self-correction — the
 	 *  model is told what the user actually said and answers the real question
 	 *  ("说错自纠", owner-selected option ① 2026-07-30). The shadow result
@@ -751,6 +753,7 @@ export class VoiceSession {
 				onSessionEnd: (toolCallId) => this.interactionMode.deactivate(toolCallId),
 				onAgentActivated: (agent) => this.activateAgentTools(agent),
 			},
+			config.bufferClientAudioDuringTransfer ?? true,
 		);
 		this.agentRouter.registerAgents(config.agents);
 		this.agentRouter.setInitialAgent(config.initialAgent);
