@@ -481,7 +481,7 @@ Arguments: ${JSON.stringify(context.task.args)}` : `Execute the task: ${context.
 
 // src/agent/agent-router.ts
 var AgentRouter = class {
-  constructor(sessionManager, eventBus, hooks, conversationContext, transport, clientTransport, model, getInstructionSuffix, extraTools = [], subagentCallbacks) {
+  constructor(sessionManager, eventBus, hooks, conversationContext, transport, clientTransport, model, getInstructionSuffix, extraTools = [], subagentCallbacks, bufferClientAudioDuringTransfer = true) {
     this.sessionManager = sessionManager;
     this.eventBus = eventBus;
     this.hooks = hooks;
@@ -492,6 +492,7 @@ var AgentRouter = class {
     this.getInstructionSuffix = getInstructionSuffix;
     this.extraTools = extraTools;
     this.subagentCallbacks = subagentCallbacks;
+    this.bufferClientAudioDuringTransfer = bufferClientAudioDuringTransfer;
   }
   agents = /* @__PURE__ */ new Map();
   _activeAgent = null;
@@ -533,7 +534,12 @@ var AgentRouter = class {
     });
     this.conversationContext.addAgentTransfer(fromAgent.name, toAgentName);
     this.sessionManager.transitionTo("TRANSFERRING");
-    this.clientTransport.startBuffering();
+    this.eventBus.publish("agent.transferStart", {
+      sessionId: this.sessionManager.sessionId,
+      fromAgent: fromAgent.name,
+      toAgent: toAgentName
+    });
+    if (this.bufferClientAudioDuringTransfer) this.clientTransport.startBuffering();
     try {
       const suffix = this.getInstructionSuffix?.() ?? "";
       const resolvedInstructions = resolveInstructions(toAgent) + suffix;
@@ -555,12 +561,13 @@ var AgentRouter = class {
         },
         state
       );
-      const buffered = this.clientTransport.stopBuffering();
+      this._activeAgent = toAgent;
+      this.subagentCallbacks?.onAgentActivated?.(toAgent);
+      const buffered = this.bufferClientAudioDuringTransfer ? this.clientTransport.stopBuffering() : [];
       for (const chunk of buffered) {
         this.transport.sendAudio(chunk.toString("base64"));
       }
       this.sessionManager.transitionTo("ACTIVE");
-      this._activeAgent = toAgent;
       const newCtx = this.createContext(toAgent.name);
       await toAgent.onEnter?.(newCtx);
       this.eventBus.publish("agent.enter", {
@@ -573,11 +580,17 @@ var AgentRouter = class {
         toAgent: toAgentName
       });
     } catch (err) {
-      this.clientTransport.stopBuffering();
+      if (this.bufferClientAudioDuringTransfer) this.clientTransport.stopBuffering();
       this.sessionManager.transitionTo("CLOSED");
       const error = new AgentError(
         `Transfer to "${toAgentName}" failed: ${err instanceof Error ? err.message : String(err)}`
       );
+      this.eventBus.publish("agent.transferFailed", {
+        sessionId: this.sessionManager.sessionId,
+        fromAgent: fromAgent.name,
+        toAgent: toAgentName,
+        error: error.message
+      });
       if (this.hooks.onError) {
         this.hooks.onError({
           sessionId: this.sessionManager.sessionId,
@@ -1324,6 +1337,7 @@ var MemoryCacheManager = class {
 // src/core/tool-call-router.ts
 var ToolCallRouter = class {
   deps;
+  transferInFlight = null;
   constructor(deps) {
     this.deps = deps;
   }
@@ -1344,15 +1358,7 @@ var ToolCallRouter = class {
         args: call.args
       };
       if (call.name === "transfer_to_agent" && call.args.agent_name) {
-        this.deps.transfer(call.args.agent_name).catch((err) => {
-          this.deps.reportError("agent-router", err);
-        });
-        this.deps.sendToolResult({
-          id: call.id,
-          name: call.name,
-          result: { status: "transferred" },
-          scheduling: "immediate"
-        });
+        this.handleTransferToolCall(call, toolCall);
         return;
       }
       const agent = this.deps.agentRouter.activeAgent;
@@ -1363,6 +1369,43 @@ var ToolCallRouter = class {
         this.handleInlineToolCall(toolCall);
       }
     }
+  }
+  handleTransferToolCall(call, toolCall) {
+    if (this.transferInFlight) {
+      this.deps.log(`Ignored concurrent transfer request ${call.id}`);
+      return;
+    }
+    const transferTool = this.deps.agentRouter.activeAgent.tools.find(
+      (t) => t.name === "transfer_to_agent"
+    );
+    const parsed = transferTool?.parameters.safeParse(call.args);
+    if (!parsed?.success) {
+      this.deps.sendToolResult({
+        id: call.id,
+        name: call.name,
+        result: { error: "Transfer target is not allowed for the active agent" },
+        scheduling: "immediate"
+      });
+      return;
+    }
+    const result = {
+      toolCallId: call.id,
+      toolName: call.name,
+      result: { status: "transferred", agent_name: parsed.data.agent_name }
+    };
+    this.deps.conversationContext.addToolCall(toolCall);
+    this.deps.conversationContext.addToolResult(result);
+    const pending = this.deps.transfer(parsed.data.agent_name).then(() => {
+      this.deps.sendToolResult({
+        id: call.id,
+        name: call.name,
+        result: result.result,
+        scheduling: "immediate"
+      });
+    }).catch((err) => this.deps.reportError("agent-router", err)).finally(() => {
+      if (this.transferInFlight === pending) this.transferInFlight = null;
+    });
+    this.transferInFlight = pending;
   }
   /** Abort one or more pending tool executions and subagents. */
   handleToolCallCancellation(ids) {
@@ -1540,6 +1583,11 @@ var TranscriptManager = class {
       this.outputPrefix += this.outputBuffer;
       this.outputBuffer = "";
     }
+  }
+  /** Drop model output that a muted host did not deliver to its audience. */
+  discardOutput() {
+    this.outputBuffer = "";
+    this.outputPrefix = "";
   }
   /**
    * Flush only the input transcript buffer — finalize as a user message and
@@ -3773,8 +3821,10 @@ var VoiceSession = class _VoiceSession {
       behaviorTools,
       {
         onMessage: (toolCallId, msg) => this.handleSubagentMessage(toolCallId, msg),
-        onSessionEnd: (toolCallId) => this.interactionMode.deactivate(toolCallId)
-      }
+        onSessionEnd: (toolCallId) => this.interactionMode.deactivate(toolCallId),
+        onAgentActivated: (agent) => this.activateAgentTools(agent)
+      },
+      config.bufferClientAudioDuringTransfer ?? true
     );
     this.agentRouter.registerAgents(config.agents);
     this.agentRouter.setInitialAgent(config.initialAgent);
@@ -3898,15 +3948,24 @@ var VoiceSession = class _VoiceSession {
     this.log(`Transferring to agent "${toAgent}"...`);
     await this.agentRouter.transfer(toAgent);
     this.log(`Transfer to "${toAgent}" complete`);
-    const agent = this.agentRouter.activeAgent;
+    if (this._clientConnected || this.config.greetWithoutClient === true) {
+      this.sendGreeting();
+    }
+  }
+  /** Name of the agent currently owning the live session. */
+  get activeAgentName() {
+    return this.agentRouter.activeAgent.name;
+  }
+  /** Remove pending assistant transcript when the host suppressed its audio. */
+  discardPendingAssistantOutput() {
+    this.transcriptManager.discardOutput();
+  }
+  activateAgentTools(agent) {
     this.toolExecutor = this.createToolExecutor(agent.name);
     const behaviorTools = this.behaviorManager?.tools ?? [];
     this.toolExecutor.register([...agent.tools, ...behaviorTools]);
     this.toolCallRouter.toolExecutor = this.toolExecutor;
     this.directiveManager.clearAgent();
-    if (this._clientConnected) {
-      this.sendGreeting();
-    }
   }
   createToolExecutor(agentName) {
     return new ToolExecutor(

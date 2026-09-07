@@ -933,10 +933,21 @@ interface EventPayloadMap {
         sessionId: string;
         agentName: string;
     };
+    'agent.transferStart': {
+        sessionId: string;
+        fromAgent: string;
+        toAgent: string;
+    };
     'agent.transfer': {
         sessionId: string;
         fromAgent: string;
         toAgent: string;
+    };
+    'agent.transferFailed': {
+        sessionId: string;
+        fromAgent: string;
+        toAgent: string;
+        error: string;
     };
     'agent.handoff': {
         sessionId: string;
@@ -1371,6 +1382,8 @@ interface SubagentEventCallbacks {
     onMessage?: (toolCallId: string, msg: SubagentMessage) => void;
     /** Fired when a subagent session transitions to a terminal state (completed/cancelled). */
     onSessionEnd?: (toolCallId: string) => void;
+    /** Rebind agent-scoped session state before target input can resume. */
+    onAgentActivated?: (agent: MainAgent) => void;
 }
 /**
  * Manages agent lifecycle: transfers between MainAgents and handoffs to background subagents.
@@ -1395,10 +1408,11 @@ declare class AgentRouter {
     private getInstructionSuffix?;
     private extraTools;
     private subagentCallbacks?;
+    private bufferClientAudioDuringTransfer;
     private agents;
     private _activeAgent;
     private activeSubagents;
-    constructor(sessionManager: SessionManager, eventBus: IEventBus, hooks: HooksManager, conversationContext: ConversationContext, transport: LLMTransport, clientTransport: ClientTransport, model: LanguageModelV1, getInstructionSuffix?: (() => string) | undefined, extraTools?: ToolDefinition[], subagentCallbacks?: SubagentEventCallbacks | undefined);
+    constructor(sessionManager: SessionManager, eventBus: IEventBus, hooks: HooksManager, conversationContext: ConversationContext, transport: LLMTransport, clientTransport: ClientTransport, model: LanguageModelV1, getInstructionSuffix?: (() => string) | undefined, extraTools?: ToolDefinition[], subagentCallbacks?: SubagentEventCallbacks | undefined, bufferClientAudioDuringTransfer?: boolean);
     registerAgents(agents: MainAgent[]): void;
     setInitialAgent(agentName: string): void;
     get activeAgent(): MainAgent;
@@ -1883,6 +1897,8 @@ declare class TranscriptManager {
      * Called before tool execution so post-tool transcription can be deduplicated.
      */
     saveOutputPrefix(): void;
+    /** Drop model output that a muted host did not deliver to its audience. */
+    discardOutput(): void;
     /**
      * Flush only the input transcript buffer — finalize as a user message and
      * send a non-partial transcript to the client. Used before tool calls so
@@ -1927,6 +1943,7 @@ interface ToolCallRouterDeps {
  */
 declare class ToolCallRouter {
     private deps;
+    private transferInFlight;
     constructor(deps: ToolCallRouterDeps);
     /** Update the tool executor (e.g. after an agent transfer). */
     set toolExecutor(executor: ToolExecutor);
@@ -1936,6 +1953,7 @@ declare class ToolCallRouter {
         name: string;
         args: Record<string, unknown>;
     }>): void;
+    private handleTransferToolCall;
     /** Abort one or more pending tool executions and subagents. */
     handleToolCallCancellation(ids: string[]): void;
     private handleInlineToolCall;
@@ -2137,6 +2155,10 @@ interface VoiceSessionConfig {
      *  context replay and the CLOSED auto-reconnect are suppressed — the
      *  host's recovery-terminal gate (no uncounted dials past its budget). */
     suppressClientAutoActions?: () => boolean;
+    /** Greet when a host carries transport audio without a WebSocket client. */
+    greetWithoutClient?: boolean;
+    /** Disable the built-in client buffer when a direct-audio host owns transfer buffering. */
+    bufferClientAudioDuringTransfer?: boolean;
     /** With shadowSttProvider set: on divergence, SPEAK a self-correction — the
      *  model is told what the user actually said and answers the real question
      *  ("说错自纠", owner-selected option ① 2026-07-30). The shadow result
@@ -2318,6 +2340,11 @@ declare class VoiceSession {
     close(_reason?: string): Promise<void>;
     /** Transfer the active session to a different agent (reconnects with new config). */
     transfer(toAgent: string): Promise<void>;
+    /** Name of the agent currently owning the live session. */
+    get activeAgentName(): string;
+    /** Remove pending assistant transcript when the host suppressed its audio. */
+    discardPendingAssistantOutput(): void;
+    private activateAgentTools;
     private createToolExecutor;
     private handleAudioFromClient;
     private handleAudioOutput;

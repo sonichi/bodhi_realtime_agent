@@ -151,6 +151,71 @@ describe('AgentRouter', () => {
 			);
 		});
 
+		it('activates target tools before replaying buffered audio and publishing completion', async () => {
+			const { eventBus, hooks, convCtx, sessionMgr, transport, client } = setup();
+			const order: string[] = [];
+			client.stopBuffering.mockImplementation(() => [Buffer.from('during-transfer')]);
+			transport.sendAudio.mockImplementation(() => {
+				order.push('audio');
+			});
+			const onAgentActivated = vi.fn(() => {
+				order.push('tools');
+			});
+			const router = new AgentRouter(
+				sessionMgr,
+				eventBus,
+				hooks,
+				convCtx,
+				transport as unknown as LLMTransport,
+				client as unknown as ClientTransport,
+				mockModel,
+				undefined,
+				[],
+				{ onAgentActivated },
+			);
+			router.registerAgents([createTestAgent('general'), createTestAgent('booking')]);
+			router.setInitialAgent('general');
+			sessionMgr.transitionTo('CONNECTING');
+			sessionMgr.transitionTo('ACTIVE');
+			eventBus.subscribe('agent.transferStart', () => {
+				order.push('start');
+			});
+			eventBus.subscribe('agent.transfer', () => {
+				order.push('complete');
+			});
+
+			await router.transfer('booking');
+
+			expect(order).toEqual(['start', 'tools', 'audio', 'complete']);
+			expect(onAgentActivated).toHaveBeenCalledWith(expect.objectContaining({ name: 'booking' }));
+		});
+
+		it('lets a direct-audio host own the only transfer buffer', async () => {
+			const { eventBus, hooks, convCtx, sessionMgr, transport, client } = setup();
+			const router = new AgentRouter(
+				sessionMgr,
+				eventBus,
+				hooks,
+				convCtx,
+				transport as unknown as LLMTransport,
+				client as unknown as ClientTransport,
+				mockModel,
+				undefined,
+				[],
+				undefined,
+				false,
+			);
+			router.registerAgents([createTestAgent('general'), createTestAgent('booking')]);
+			router.setInitialAgent('general');
+			sessionMgr.transitionTo('CONNECTING');
+			sessionMgr.transitionTo('ACTIVE');
+
+			await router.transfer('booking');
+
+			expect(client.startBuffering).not.toHaveBeenCalled();
+			expect(client.stopBuffering).not.toHaveBeenCalled();
+		});
+
 		it('prepends language directive on transfer when agent has language', async () => {
 			const { router, sessionMgr, transport } = setup();
 			router.registerAgents([

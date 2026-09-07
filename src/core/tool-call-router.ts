@@ -36,6 +36,7 @@ export interface ToolCallRouterDeps {
  */
 export class ToolCallRouter {
 	private deps: ToolCallRouterDeps;
+	private transferInFlight: Promise<void> | null = null;
 
 	constructor(deps: ToolCallRouterDeps) {
 		this.deps = deps;
@@ -69,16 +70,7 @@ export class ToolCallRouter {
 
 			// Check if this is a transfer tool
 			if (call.name === 'transfer_to_agent' && call.args.agent_name) {
-				this.deps.transfer(call.args.agent_name as string).catch((err) => {
-					this.deps.reportError('agent-router', err);
-				});
-				// Send acknowledgement so the LLM doesn't hang
-				this.deps.sendToolResult({
-					id: call.id,
-					name: call.name,
-					result: { status: 'transferred' },
-					scheduling: 'immediate',
-				});
+				this.handleTransferToolCall(call, toolCall);
 				return;
 			}
 
@@ -92,6 +84,53 @@ export class ToolCallRouter {
 				this.handleInlineToolCall(toolCall);
 			}
 		}
+	}
+
+	private handleTransferToolCall(
+		call: { id: string; name: string; args: Record<string, unknown> },
+		toolCall: { toolCallId: string; toolName: string; args: Record<string, unknown> },
+	): void {
+		if (this.transferInFlight) {
+			this.deps.log(`Ignored concurrent transfer request ${call.id}`);
+			return;
+		}
+		const transferTool = this.deps.agentRouter.activeAgent.tools.find(
+			(t: ToolDefinition) => t.name === 'transfer_to_agent',
+		);
+		const parsed = transferTool?.parameters.safeParse(call.args);
+		if (!parsed?.success) {
+			this.deps.sendToolResult({
+				id: call.id,
+				name: call.name,
+				result: { error: 'Transfer target is not allowed for the active agent' },
+				scheduling: 'immediate',
+			});
+			return;
+		}
+
+		const result = {
+			toolCallId: call.id,
+			toolName: call.name,
+			result: { status: 'transferred', agent_name: parsed.data.agent_name },
+		};
+		this.deps.conversationContext.addToolCall(toolCall);
+		this.deps.conversationContext.addToolResult(result);
+		const pending = this.deps
+			.transfer(parsed.data.agent_name as string)
+			.then(() => {
+				// Reconnect transports drop this by generation; in-place transports need it.
+				this.deps.sendToolResult({
+					id: call.id,
+					name: call.name,
+					result: result.result,
+					scheduling: 'immediate',
+				});
+			})
+			.catch((err) => this.deps.reportError('agent-router', err))
+			.finally(() => {
+				if (this.transferInFlight === pending) this.transferInFlight = null;
+			});
+		this.transferInFlight = pending;
 	}
 
 	/** Abort one or more pending tool executions and subagents. */

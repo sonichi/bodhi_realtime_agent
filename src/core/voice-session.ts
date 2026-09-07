@@ -129,6 +129,10 @@ export interface VoiceSessionConfig {
 	 *  context replay and the CLOSED auto-reconnect are suppressed — the
 	 *  host's recovery-terminal gate (no uncounted dials past its budget). */
 	suppressClientAutoActions?: () => boolean;
+	/** Greet when a host carries transport audio without a WebSocket client. */
+	greetWithoutClient?: boolean;
+	/** Disable the built-in client buffer when a direct-audio host owns transfer buffering. */
+	bufferClientAudioDuringTransfer?: boolean;
 	/** With shadowSttProvider set: on divergence, SPEAK a self-correction — the
 	 *  model is told what the user actually said and answers the real question
 	 *  ("说错自纠", owner-selected option ① 2026-07-30). The shadow result
@@ -747,7 +751,9 @@ export class VoiceSession {
 			{
 				onMessage: (toolCallId, msg) => this.handleSubagentMessage(toolCallId, msg),
 				onSessionEnd: (toolCallId) => this.interactionMode.deactivate(toolCallId),
+				onAgentActivated: (agent) => this.activateAgentTools(agent),
 			},
+			config.bufferClientAudioDuringTransfer ?? true,
 		);
 		this.agentRouter.registerAgents(config.agents);
 		this.agentRouter.setInitialAgent(config.initialAgent);
@@ -902,8 +908,23 @@ export class VoiceSession {
 		await this.agentRouter.transfer(toAgent);
 		this.log(`Transfer to "${toAgent}" complete`);
 
-		// Update tool executor with new agent's tools
-		const agent = this.agentRouter.activeAgent;
+		// Send the new agent's greeting if configured
+		if (this._clientConnected || this.config.greetWithoutClient === true) {
+			this.sendGreeting();
+		}
+	}
+
+	/** Name of the agent currently owning the live session. */
+	get activeAgentName(): string {
+		return this.agentRouter.activeAgent.name;
+	}
+
+	/** Remove pending assistant transcript when the host suppressed its audio. */
+	discardPendingAssistantOutput(): void {
+		this.transcriptManager.discardOutput();
+	}
+
+	private activateAgentTools(agent: MainAgent): void {
 		this.toolExecutor = this.createToolExecutor(agent.name);
 		const behaviorTools = this.behaviorManager?.tools ?? [];
 		this.toolExecutor.register([...agent.tools, ...behaviorTools]);
@@ -911,11 +932,6 @@ export class VoiceSession {
 
 		// Clear agent-scoped directives on transfer; session-scoped directives persist
 		this.directiveManager.clearAgent();
-
-		// Send the new agent's greeting if configured
-		if (this._clientConnected) {
-			this.sendGreeting();
-		}
 	}
 
 	private createToolExecutor(agentName: string): ToolExecutor {

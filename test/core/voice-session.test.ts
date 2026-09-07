@@ -115,6 +115,25 @@ function createBackgroundToolAgent(): MainAgent {
 	};
 }
 
+function createNativeTransferAgent(
+	name: 'listener' | 'main',
+	target: 'listener' | 'main',
+): MainAgent {
+	return {
+		name,
+		instructions: `You are ${name}`,
+		tools: [
+			{
+				name: 'transfer_to_agent',
+				description: `Transfer to ${target}`,
+				parameters: z.object({ agent_name: z.literal(target) }),
+				execution: 'inline',
+				execute: async () => ({}),
+			},
+		],
+	};
+}
+
 describe('VoiceSession', () => {
 	let session: VoiceSession | null = null;
 
@@ -123,6 +142,58 @@ describe('VoiceSession', () => {
 			await session.close();
 			session = null;
 		}
+	});
+
+	it('runs listener to main to listener through native transfer tool calls', async () => {
+		session = new VoiceSession({
+			sessionId: 'sess_native_handoff',
+			userId: 'user_1',
+			apiKey: 'test-key',
+			agents: [
+				createNativeTransferAgent('listener', 'main'),
+				createNativeTransferAgent('main', 'listener'),
+			],
+			initialAgent: 'listener',
+			port: 9927,
+			model: mockModel,
+		});
+		const transfers: Array<{ fromAgent: string; toAgent: string }> = [];
+		session.eventBus.subscribe('agent.transfer', (event) => transfers.push(event));
+		await session.start();
+		expect(session.activeAgentName).toBe('listener');
+
+		const { _getMessageHandler } = await import('@google/genai');
+		const fire = () => (_getMessageHandler as unknown as () => (msg: unknown) => void)();
+		fire()({ serverContent: { inputTranscription: { text: 'Hi Lucy, help me' } } });
+		fire()({
+			toolCall: {
+				functionCalls: [{ id: 'wake', name: 'transfer_to_agent', args: { agent_name: 'main' } }],
+			},
+		});
+		await vi.waitFor(() => expect(session?.activeAgentName).toBe('main'));
+
+		fire()({ serverContent: { inputTranscription: { text: 'Hi Maddie' } } });
+		fire()({
+			toolCall: {
+				functionCalls: [
+					{ id: 'release', name: 'transfer_to_agent', args: { agent_name: 'listener' } },
+				],
+			},
+		});
+		await vi.waitFor(() => expect(session?.activeAgentName).toBe('listener'));
+
+		expect(transfers).toEqual([
+			expect.objectContaining({ fromAgent: 'listener', toAgent: 'main' }),
+			expect.objectContaining({ fromAgent: 'main', toAgent: 'listener' }),
+		]);
+		const replay = session.conversationContext.toReplayContent();
+		expect(replay).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ type: 'text', role: 'user', text: 'Hi Lucy, help me' }),
+				expect.objectContaining({ type: 'transfer', fromAgent: 'listener', toAgent: 'main' }),
+				expect.objectContaining({ type: 'transfer', fromAgent: 'main', toAgent: 'listener' }),
+			]),
+		);
 	});
 
 	// Reachability: diagnostics must be readable from the session a caller

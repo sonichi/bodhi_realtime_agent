@@ -86,6 +86,12 @@ export class TranscriptManager {
 		}
 	}
 
+	/** Drop model output that a muted host did not deliver to its audience. */
+	discardOutput(): void {
+		this.outputBuffer = '';
+		this.outputPrefix = '';
+	}
+
 	/**
 	 * Flush only the input transcript buffer — finalize as a user message and
 	 * send a non-partial transcript to the client. Used before tool calls so

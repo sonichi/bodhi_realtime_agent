@@ -31,6 +31,8 @@ export interface SubagentEventCallbacks {
 	onMessage?: (toolCallId: string, msg: SubagentMessage) => void;
 	/** Fired when a subagent session transitions to a terminal state (completed/cancelled). */
 	onSessionEnd?: (toolCallId: string) => void;
+	/** Rebind agent-scoped session state before target input can resume. */
+	onAgentActivated?: (agent: MainAgent) => void;
 }
 
 /**
@@ -61,6 +63,7 @@ export class AgentRouter {
 		private getInstructionSuffix?: () => string,
 		private extraTools: ToolDefinition[] = [],
 		private subagentCallbacks?: SubagentEventCallbacks,
+		private bufferClientAudioDuringTransfer = true,
 	) {}
 
 	registerAgents(agents: MainAgent[]): void {
@@ -110,9 +113,14 @@ export class AgentRouter {
 
 		// 3. Transition to TRANSFERRING
 		this.sessionManager.transitionTo('TRANSFERRING');
+		this.eventBus.publish('agent.transferStart', {
+			sessionId: this.sessionManager.sessionId,
+			fromAgent: fromAgent.name,
+			toAgent: toAgentName,
+		});
 
 		// 4. Start buffering client audio
-		this.clientTransport.startBuffering();
+		if (this.bufferClientAudioDuringTransfer) this.clientTransport.startBuffering();
 
 		try {
 			// 5. Build transfer config and state
@@ -142,17 +150,22 @@ export class AgentRouter {
 				state,
 			);
 
-			// 7. Stop buffering and replay audio
-			const buffered = this.clientTransport.stopBuffering();
+			// 7. Activate target policy before any buffered input can reach it.
+			this._activeAgent = toAgent;
+			this.subagentCallbacks?.onAgentActivated?.(toAgent);
+
+			// 8. Stop buffering and replay audio
+			const buffered = this.bufferClientAudioDuringTransfer
+				? this.clientTransport.stopBuffering()
+				: [];
 			for (const chunk of buffered) {
 				this.transport.sendAudio(chunk.toString('base64'));
 			}
 
-			// 8. Transition to ACTIVE
+			// 9. Transition to ACTIVE
 			this.sessionManager.transitionTo('ACTIVE');
-			this._activeAgent = toAgent;
 
-			// 9. onEnter new agent
+			// 10. onEnter new agent
 			const newCtx = this.createContext(toAgent.name);
 			await toAgent.onEnter?.(newCtx);
 			this.eventBus.publish('agent.enter', {
@@ -160,7 +173,7 @@ export class AgentRouter {
 				agentName: toAgent.name,
 			});
 
-			// 10. Publish transfer event
+			// 11. Publish transfer event
 			this.eventBus.publish('agent.transfer', {
 				sessionId: this.sessionManager.sessionId,
 				fromAgent: fromAgent.name,
@@ -168,11 +181,17 @@ export class AgentRouter {
 			});
 		} catch (err) {
 			// Transfer failed — session is broken, clean up and transition to CLOSED
-			this.clientTransport.stopBuffering();
+			if (this.bufferClientAudioDuringTransfer) this.clientTransport.stopBuffering();
 			this.sessionManager.transitionTo('CLOSED');
 			const error = new AgentError(
 				`Transfer to "${toAgentName}" failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
+			this.eventBus.publish('agent.transferFailed', {
+				sessionId: this.sessionManager.sessionId,
+				fromAgent: fromAgent.name,
+				toAgent: toAgentName,
+				error: error.message,
+			});
 			if (this.hooks.onError) {
 				this.hooks.onError({
 					sessionId: this.sessionManager.sessionId,
