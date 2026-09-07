@@ -129,6 +129,8 @@ export interface VoiceSessionConfig {
 	 *  context replay and the CLOSED auto-reconnect are suppressed — the
 	 *  host's recovery-terminal gate (no uncounted dials past its budget). */
 	suppressClientAutoActions?: () => boolean;
+	/** Greet when a host carries transport audio without a WebSocket client. */
+	greetWithoutClient?: boolean;
 	/** With shadowSttProvider set: on divergence, SPEAK a self-correction — the
 	 *  model is told what the user actually said and answers the real question
 	 *  ("说错自纠", owner-selected option ① 2026-07-30). The shadow result
@@ -904,7 +906,7 @@ export class VoiceSession {
 		this.log(`Transfer to "${toAgent}" complete`);
 
 		// Send the new agent's greeting if configured
-		if (this._clientConnected) {
+		if (this._clientConnected || this.config.greetWithoutClient === true) {
 			this.sendGreeting();
 		}
 	}

@@ -3946,7 +3946,7 @@ var VoiceSession = class _VoiceSession {
     this.log(`Transferring to agent "${toAgent}"...`);
     await this.agentRouter.transfer(toAgent);
     this.log(`Transfer to "${toAgent}" complete`);
-    if (this._clientConnected) {
+    if (this._clientConnected || this.config.greetWithoutClient === true) {
       this.sendGreeting();
     }
   }
