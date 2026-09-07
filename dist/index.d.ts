@@ -933,10 +933,21 @@ interface EventPayloadMap {
         sessionId: string;
         agentName: string;
     };
+    'agent.transferStart': {
+        sessionId: string;
+        fromAgent: string;
+        toAgent: string;
+    };
     'agent.transfer': {
         sessionId: string;
         fromAgent: string;
         toAgent: string;
+    };
+    'agent.transferFailed': {
+        sessionId: string;
+        fromAgent: string;
+        toAgent: string;
+        error: string;
     };
     'agent.handoff': {
         sessionId: string;
@@ -1371,6 +1382,8 @@ interface SubagentEventCallbacks {
     onMessage?: (toolCallId: string, msg: SubagentMessage) => void;
     /** Fired when a subagent session transitions to a terminal state (completed/cancelled). */
     onSessionEnd?: (toolCallId: string) => void;
+    /** Rebind agent-scoped session state before target input can resume. */
+    onAgentActivated?: (agent: MainAgent) => void;
 }
 /**
  * Manages agent lifecycle: transfers between MainAgents and handoffs to background subagents.
@@ -1927,6 +1940,7 @@ interface ToolCallRouterDeps {
  */
 declare class ToolCallRouter {
     private deps;
+    private transferInFlight;
     constructor(deps: ToolCallRouterDeps);
     /** Update the tool executor (e.g. after an agent transfer). */
     set toolExecutor(executor: ToolExecutor);
@@ -1936,6 +1950,7 @@ declare class ToolCallRouter {
         name: string;
         args: Record<string, unknown>;
     }>): void;
+    private handleTransferToolCall;
     /** Abort one or more pending tool executions and subagents. */
     handleToolCallCancellation(ids: string[]): void;
     private handleInlineToolCall;
@@ -2318,6 +2333,9 @@ declare class VoiceSession {
     close(_reason?: string): Promise<void>;
     /** Transfer the active session to a different agent (reconnects with new config). */
     transfer(toAgent: string): Promise<void>;
+    /** Name of the agent currently owning the live session. */
+    get activeAgentName(): string;
+    private activateAgentTools;
     private createToolExecutor;
     private handleAudioFromClient;
     private handleAudioOutput;

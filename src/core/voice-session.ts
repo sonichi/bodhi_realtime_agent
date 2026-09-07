@@ -747,6 +747,7 @@ export class VoiceSession {
 			{
 				onMessage: (toolCallId, msg) => this.handleSubagentMessage(toolCallId, msg),
 				onSessionEnd: (toolCallId) => this.interactionMode.deactivate(toolCallId),
+				onAgentActivated: (agent) => this.activateAgentTools(agent),
 			},
 		);
 		this.agentRouter.registerAgents(config.agents);
@@ -902,8 +903,18 @@ export class VoiceSession {
 		await this.agentRouter.transfer(toAgent);
 		this.log(`Transfer to "${toAgent}" complete`);
 
-		// Update tool executor with new agent's tools
-		const agent = this.agentRouter.activeAgent;
+		// Send the new agent's greeting if configured
+		if (this._clientConnected) {
+			this.sendGreeting();
+		}
+	}
+
+	/** Name of the agent currently owning the live session. */
+	get activeAgentName(): string {
+		return this.agentRouter.activeAgent.name;
+	}
+
+	private activateAgentTools(agent: MainAgent): void {
 		this.toolExecutor = this.createToolExecutor(agent.name);
 		const behaviorTools = this.behaviorManager?.tools ?? [];
 		this.toolExecutor.register([...agent.tools, ...behaviorTools]);
@@ -911,11 +922,6 @@ export class VoiceSession {
 
 		// Clear agent-scoped directives on transfer; session-scoped directives persist
 		this.directiveManager.clearAgent();
-
-		// Send the new agent's greeting if configured
-		if (this._clientConnected) {
-			this.sendGreeting();
-		}
 	}
 
 	private createToolExecutor(agentName: string): ToolExecutor {

@@ -21,7 +21,100 @@ function createBackgroundTool(name: string, pendingMessage?: string): ToolDefini
 	};
 }
 
+function createTransferTool(target: 'main' | 'listener'): ToolDefinition {
+	return {
+		name: 'transfer_to_agent',
+		description: 'Transfer',
+		parameters: z.object({ agent_name: z.literal(target) }),
+		execution: 'inline',
+		execute: async () => ({}),
+	};
+}
+
 describe('ToolCallRouter', () => {
+	it('waits for native transfer completion and rejects a second transfer in flight', async () => {
+		let finishTransfer!: () => void;
+		const transfer = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					finishTransfer = resolve;
+				}),
+		);
+		const sendToolResult = vi.fn();
+		const addToolCall = vi.fn();
+		const addToolResult = vi.fn();
+		const log = vi.fn();
+		const router = new ToolCallRouter({
+			toolExecutor: { handleToolCall: vi.fn(), cancel: vi.fn() } as never,
+			agentRouter: {
+				activeAgent: { name: 'listener', tools: [createTransferTool('main')] },
+				cancelSubagent: vi.fn(),
+			} as never,
+			conversationContext: { addToolCall, addToolResult } as never,
+			notificationQueue: {} as never,
+			transcriptManager: { flushInput: vi.fn(), saveOutputPrefix: vi.fn() } as never,
+			subagentConfigs: {},
+			sendToolResult,
+			transfer,
+			reportError: vi.fn(),
+			log,
+		});
+
+		router.handleToolCalls([
+			{ id: 'wake_1', name: 'transfer_to_agent', args: { agent_name: 'main' } },
+		]);
+		router.handleToolCalls([
+			{ id: 'wake_2', name: 'transfer_to_agent', args: { agent_name: 'main' } },
+		]);
+
+		expect(transfer).toHaveBeenCalledTimes(1);
+		expect(sendToolResult).not.toHaveBeenCalled();
+		expect(log).toHaveBeenCalledWith('Ignored concurrent transfer request wake_2');
+		expect(addToolCall).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: 'wake_1' }));
+		expect(addToolResult).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: 'wake_1' }));
+
+		finishTransfer();
+		await flushMicrotasks();
+		expect(sendToolResult).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: 'wake_1',
+				result: { status: 'transferred', agent_name: 'main' },
+			}),
+		);
+	});
+
+	it('validates transfer direction with the active agent tool schema', () => {
+		const sendToolResult = vi.fn();
+		const transfer = vi.fn();
+		const router = new ToolCallRouter({
+			toolExecutor: { handleToolCall: vi.fn(), cancel: vi.fn() } as never,
+			agentRouter: {
+				activeAgent: { name: 'listener', tools: [createTransferTool('main')] },
+				cancelSubagent: vi.fn(),
+			} as never,
+			conversationContext: {} as never,
+			notificationQueue: {} as never,
+			transcriptManager: { flushInput: vi.fn(), saveOutputPrefix: vi.fn() } as never,
+			subagentConfigs: {},
+			sendToolResult,
+			transfer,
+			reportError: vi.fn(),
+			log: vi.fn(),
+		});
+
+		router.handleToolCalls([
+			{ id: 'bad', name: 'transfer_to_agent', args: { agent_name: 'listener' } },
+		]);
+
+		expect(transfer).not.toHaveBeenCalled();
+		expect(sendToolResult).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: 'bad',
+				result: { error: 'Transfer target is not allowed for the active agent' },
+			}),
+		);
+	});
+
 	it('uses createInstance() and records tool_call before handoff completion', async () => {
 		const createInstance = vi.fn();
 		let resolveHandoff: ((value: { text: string }) => void) | null = null;
